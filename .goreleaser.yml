@@ -19,7 +19,11 @@ archives:
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
 
+snapshot:
+  name_template: "{{ .Version }}-next"
+
 release:
   github:
     owner: batonogov
     name: terraform-provider-synology-dsm
+  mode: replace

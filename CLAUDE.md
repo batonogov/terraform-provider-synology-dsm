@@ -59,6 +59,30 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 4. Add unit tests in `internal/client/<resource>_test.go` with httptest mock
 5. Update README.md features table
 
+## Release Flow
+
+Automated via **Release Please + GoReleaser**:
+
+1. All commits to `main` must use **conventional commits** (`feat:`, `fix:`, `docs:`, `ci:`, `deps:`, `breaking:`)
+2. Release Please automatically creates/updates a release PR with changelog and version bump
+3. Merging the release PR creates a GitHub Release + git tag
+4. GoReleaser picks up the release event, builds binaries for all platforms, and uploads assets
+
+```
+conventional commits → Release Please PR → merge → GitHub Release → GoReleaser → binaries
+```
+
+- **Never create tags manually** — Release Please manages versions
+- **Never skip conventional commits** — changelog and versioning depend on them
+- Dependabot keeps Go modules and GitHub Actions up to date (weekly, `deps:` / `ci:` prefix)
+
+## CI/CD
+
+- `.github/workflows/test.yml` — tests on push/PR
+- `.github/workflows/release-please.yml` — release PR automation on push to main
+- `.github/workflows/release.yml` — GoReleaser on GitHub Release event
+- `.github/dependabot.yml` — weekly dependency updates (gomod + github-actions)
+
 ## Roadmap
 
 `dsm_group` → `dsm_shared_folder` → `dsm_share_permission` → `dsm_user_quota` → Synology Drive → Photos
