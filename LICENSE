@@ -1,104 +1,21 @@
-Mozilla Public License Version 2.0
-==================================
+MIT License
 
-1. Definitions
---------------
+Copyright (c) 2026 Fedor Batonogov
 
-1.1. "Contributor" means each individual or legal entity that creates, contributes to
-the creation of, or owns Covered Software.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-1.2. "Contributor Version" means the combination of the Contributions of others (if any)
-used by a Contributor and that particular Contributor's Contribution.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-1.3. "Covered Software" means Source Code Form to which the initial Contributor has
-attached the notice in Exhibit A, the Executable Form of such Source Code Form, and
-Modifications of such Source Code Form, in each case including portions thereof.
-
-1.4. "License" means this document.
-
-1.5. "Licensable" means having the right to grant, to the maximum extent possible,
-whether at the time of the initial grant or subsequently, any and all of the rights
-conveyed by this License.
-
-1.6. "Modifications" means any of the following:
-
-(a) any file in Source Code Form that results from an addition to, deletion from, or
-    modification of the contents of Covered Software; or
-
-(b) any new file in Source Code Form that contains any Covered Software.
-
-1.7. "Patent Claims" of a Contributor means any patent claim(s), including without
-limitation, method, process, and apparatus claims, in any patent Licensable by such
-Contributor that are necessarily infringed by the use or sale of its Contribution
-alone or when combined with the Contributor Version.
-
-1.8. "Source Code Form" means the form of the work preferred for making modifications.
-
-1.9. "You" (or "Your") means an individual or a legal entity exercising rights under
-this License. For legal entities, "You" includes any entity that controls, is controlled
-by, or is under common control with You.
-
-2. License Grants and Conditions
----------------------------------
-
-2.1. Grants
-Each Contributor hereby grants You a world-wide, royalty-free, non-exclusive license:
-
-(a) under intellectual property rights (other than patent or trademark) Licensable by
-    such Contributor to use, reproduce, make available, modify, display, perform,
-    distribute, and otherwise exploit its Contributions, either on an unmodified basis,
-    with Modifications, or as part of a larger work; and
-
-(b) under Patent Claims of such Contributor to make, use, sell, offer for sale, have
-    made, import, and otherwise transfer either its Contributions or its Contributor
-    Version.
-
-2.2. Effective Date
-The licenses granted in Section 2.1 with respect to any Contribution become effective
-for each Contribution on the date the Contributor first distributes such Contribution.
-
-2.3. Limitations on Grant Scope
-The licenses granted in this Section 2 are the only rights granted under this License.
-No additional rights or licenses will be implied from the distribution or licensing of
-Covered Software under this License.
-
-3. Conditions
--------------
-
-3.1. Notice
-You must ensure that all recipients of Covered Software receive a copy of this License.
-
-3.2. Source Code Form
-If You distribute Covered Software in Source Code Form, You must do so only under the
-terms of this License, and You must include a copy of this License with every copy of
-the Covered Software You distribute.
-
-3.3. Executable Form
-If You distribute Covered Software in Executable Form, You must ensure that the Source
-Code Form of the Covered Software is available under this License, and You must inform
-recipients how they can obtain it in a reasonable manner.
-
-4. Disclaimer of Warranty
--------------------------
-
-Covered Software is provided under this License on an "as is" basis, without warranty
-of any kind, either expressed, implied, or statutory, including, without limitation,
-warranties that the Covered Software is free of defects, merchantable, fit for a
-particular purpose or non-infringing.
-
-5. Limitation of Liability
---------------------------
-
-Under no circumstances and under no legal theory, whether tort (including negligence),
-contract, or otherwise, shall any Contributor, or anyone who distributes Covered Software
-as permitted above, be liable to You for any direct, indirect, special, incidental, or
-consequential damages of any character including, without limitation, damages for losses
-of goodwill, work stoppage, computer failure or malfunction, or any and all other
-commercial damages or losses.
-
-6. Term and Termination
------------------------
-
-This License applies for the term of the Copyright and similar rights granted herein.
-If You fail to comply with this License, then Your rights under this License terminate
-automatically.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
