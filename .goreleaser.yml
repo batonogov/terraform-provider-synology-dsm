@@ -26,4 +26,4 @@ release:
   github:
     owner: batonogov
     name: terraform-provider-synology-dsm
-  mode: replace
+  mode: keep-existing
