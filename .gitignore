@@ -1,0 +1,27 @@
+# Binaries
+bin/
+*.exe
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Test
+testacc/.terraform/
+testacc/*.tfstate*
