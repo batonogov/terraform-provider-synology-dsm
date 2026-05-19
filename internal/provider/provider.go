@@ -125,5 +125,7 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 }
 
 func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewUserDataSource,
+	}
 }
