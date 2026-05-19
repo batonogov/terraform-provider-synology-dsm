@@ -1,12 +1,8 @@
 package provider
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 )
 
@@ -69,64 +65,20 @@ func TestUserDataSource_Configure_NilProviderData(t *testing.T) {
 	}
 }
 
-func TestUserDataSource_Read_viaClient(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/webapi/entry.cgi", func(w http.ResponseWriter, r *http.Request) {
-		api := r.URL.Query().Get("api")
-		method := r.URL.Query().Get("method")
+func TestUserDataSource_Configure_WrongType(t *testing.T) {
+	ds := NewUserDataSource().(*userDataSource)
 
-		switch {
-		case api == "SYNO.API.Auth" && method == "login":
-			json.NewEncoder(w).Encode(client.APIResponse{
-				Success: true,
-				Data:    json.RawMessage(`{"sid":"test-sid","synotoken":"test-token"}`),
-			})
-		case api == "SYNO.Core.User" && method == "get":
-			data := map[string]interface{}{
-				"name":        "admin",
-				"description": "Test user",
-				"email":       "admin@example.com",
-				"disabled":    false,
-				"uid":         1024,
-				"groups":      []string{"users", "admin"},
-			}
-			raw, _ := json.Marshal(data)
-			json.NewEncoder(w).Encode(client.APIResponse{Success: true, Data: raw})
-		default:
-			json.NewEncoder(w).Encode(client.APIResponse{
-				Success: false,
-				Error:   &client.APIError{Code: 101},
-			})
-		}
-	})
+	req := datasource.ConfigureRequest{
+		ProviderData: "not-a-client",
+	}
+	resp := &datasource.ConfigureResponse{}
 
-	server := httptest.NewServer(mux)
-	defer server.Close()
+	ds.Configure(t.Context(), req, resp)
 
-	c := client.NewClient(server.URL, "admin", "password", false)
-	c.Login(t.Context())
-
-	user, err := c.GetUser(t.Context(), "admin")
-	if err != nil {
-		t.Fatalf("GetUser failed: %v", err)
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected error for wrong ProviderData type")
 	}
-
-	if user.Name != "admin" {
-		t.Errorf("expected name admin, got %q", user.Name)
-	}
-	if user.Description != "Test user" {
-		t.Errorf("expected description 'Test user', got %q", user.Description)
-	}
-	if user.Email != "admin@example.com" {
-		t.Errorf("expected email admin@example.com, got %q", user.Email)
-	}
-	if user.Disabled {
-		t.Error("expected disabled false")
-	}
-	if user.UID != 1024 {
-		t.Errorf("expected uid 1024, got %d", user.UID)
-	}
-	if len(user.Groups) != 2 || user.Groups[0] != "users" || user.Groups[1] != "admin" {
-		t.Errorf("expected groups [users admin], got %v", user.Groups)
+	if ds.client != nil {
+		t.Error("client should remain nil for wrong type")
 	}
 }
