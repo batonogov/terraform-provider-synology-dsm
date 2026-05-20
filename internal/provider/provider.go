@@ -121,11 +121,13 @@ func (p *synologyProvider) Configure(ctx context.Context, req provider.Configure
 func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewUserResource,
+		NewGroupResource,
 	}
 }
 
 func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewUserDataSource,
+		NewGroupDataSource,
 	}
 }
