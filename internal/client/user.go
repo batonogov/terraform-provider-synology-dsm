@@ -70,7 +70,24 @@ func (c *Client) GetUser(ctx context.Context, name string) (*User, error) {
 		return nil, fmt.Errorf("get user %q: %w", name, err)
 	}
 
-	return parseUser(data)
+	var result struct {
+		Users []json.RawMessage `json:"users"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse user get response: %w", err)
+	}
+
+	for _, raw := range result.Users {
+		u, err := parseUser(raw)
+		if err != nil {
+			continue
+		}
+		if u.Name == name {
+			return u, nil
+		}
+	}
+
+	return nil, fmt.Errorf("user %q not found", name)
 }
 
 func (c *Client) ListUsers(ctx context.Context) ([]User, error) {

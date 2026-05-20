@@ -48,7 +48,24 @@ func (c *Client) GetGroup(ctx context.Context, name string) (*Group, error) {
 		return nil, fmt.Errorf("get group %q: %w", name, err)
 	}
 
-	return parseGroup(data)
+	var result struct {
+		Groups []json.RawMessage `json:"groups"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse group get response: %w", err)
+	}
+
+	for _, raw := range result.Groups {
+		g, err := parseGroup(raw)
+		if err != nil {
+			continue
+		}
+		if g.Name == name {
+			return g, nil
+		}
+	}
+
+	return nil, fmt.Errorf("group %q not found", name)
 }
 
 func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {

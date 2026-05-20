@@ -30,15 +30,17 @@ func setupTestServer() (*Client, *httptest.Server) {
 
 		case api == "SYNO.Core.User" && method == "get":
 			name := r.URL.Query().Get("name")
-			data := map[string]interface{}{
-				"name":        name,
-				"description": "Test user",
-				"email":       name + "@example.com",
-				"disabled":    false,
-				"uid":         1024,
-				"groups":      []string{"users"},
+			users := []map[string]interface{}{
+				{
+					"name":        name,
+					"description": "Test user",
+					"email":       name + "@example.com",
+					"disabled":    false,
+					"uid":         1024,
+					"groups":      []string{"users"},
+				},
 			}
-			raw, _ := json.Marshal(data)
+			raw, _ := json.Marshal(map[string]interface{}{"users": users})
 			json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
 
 		case api == "SYNO.Core.User" && method == "list":
