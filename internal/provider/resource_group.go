@@ -135,6 +135,8 @@ func (r *groupResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
+	state.ID = types.StringValue(group.Name)
+	state.Name = types.StringValue(group.Name)
 	state.Description = types.StringValue(group.Description)
 	state.GID = types.Int64Value(int64(group.GID))
 
