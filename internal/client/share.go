@@ -24,23 +24,30 @@ type CreateShareRequest struct {
 	EnableRecycleBin bool
 }
 
-func (c *Client) CreateShare(ctx context.Context, req CreateShareRequest) (*Share, error) {
-	shareInfo, _ := json.Marshal(map[string]interface{}{
-		"name":                    req.Name,
-		"vol_path":                req.VolPath,
-		"desc":                    req.Description,
-		"hidden":                  req.Hidden,
-		"enable_recycle_bin":      req.EnableRecycleBin,
-		"recycle_bin_admin_only":  true,
-		"hide_unreadable":         false,
-		"enable_share_compress":   false,
-		"enable_share_cow":        false,
-		"share_quota":             0,
-	})
+func buildShareInfo(req CreateShareRequest, nameOrg string) string {
+	m := map[string]interface{}{
+		"name":                   req.Name,
+		"vol_path":               req.VolPath,
+		"desc":                   req.Description,
+		"hidden":                 req.Hidden,
+		"enable_recycle_bin":     req.EnableRecycleBin,
+		"recycle_bin_admin_only": true,
+		"hide_unreadable":        false,
+		"enable_share_compress":  false,
+		"enable_share_cow":       false,
+		"share_quota":            0,
+	}
+	if nameOrg != "" {
+		m["name_org"] = nameOrg
+	}
+	raw, _ := json.Marshal(m)
+	return string(raw)
+}
 
+func (c *Client) CreateShare(ctx context.Context, req CreateShareRequest) (*Share, error) {
 	params := url.Values{}
 	params.Set("name", req.Name)
-	params.Set("shareinfo", string(shareInfo))
+	params.Set("shareinfo", buildShareInfo(req, ""))
 
 	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "create", params)
 	if err != nil {
@@ -95,22 +102,9 @@ func (c *Client) ListShares(ctx context.Context) ([]Share, error) {
 }
 
 func (c *Client) UpdateShare(ctx context.Context, name string, req CreateShareRequest) (*Share, error) {
-	shareInfo, _ := json.Marshal(map[string]interface{}{
-		"name":                    req.Name,
-		"vol_path":                req.VolPath,
-		"desc":                    req.Description,
-		"hidden":                  req.Hidden,
-		"enable_recycle_bin":      req.EnableRecycleBin,
-		"recycle_bin_admin_only":  true,
-		"hide_unreadable":         false,
-		"enable_share_compress":   false,
-		"enable_share_cow":        false,
-		"share_quota":             0,
-	})
-
 	params := url.Values{}
 	params.Set("name", req.Name)
-	params.Set("shareinfo", string(shareInfo))
+	params.Set("shareinfo", buildShareInfo(req, name))
 
 	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "create", params)
 	if err != nil {
