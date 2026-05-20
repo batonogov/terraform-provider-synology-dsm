@@ -72,7 +72,7 @@ func (c *Client) Login(ctx context.Context) error {
 	params.Set("format", "sid")
 	params.Set("enable_syno_token", "yes")
 
-	resp, err := c.doRequest(ctx, params)
+	resp, err := c.doGetRequest(ctx, params)
 	if err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
@@ -96,12 +96,32 @@ func (c *Client) Logout(ctx context.Context) error {
 	params.Set("version", "7")
 	params.Set("method", "logout")
 
-	_, err := c.doRequest(ctx, params)
+	_, err := c.doGetRequest(ctx, params)
 	c.sessionID = ""
 	return err
 }
 
 func (c *Client) DoAPI(ctx context.Context, api, version, method string, extraParams url.Values) (json.RawMessage, error) {
+	params := c.buildParams(api, version, method, extraParams)
+
+	resp, err := c.doRequestWithRetry(ctx, params, http.MethodGet)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) DoAPIPost(ctx context.Context, api, version, method string, extraParams url.Values) (json.RawMessage, error) {
+	params := c.buildParams(api, version, method, extraParams)
+
+	resp, err := c.doRequestWithRetry(ctx, params, http.MethodPost)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) buildParams(api, version, method string, extraParams url.Values) url.Values {
 	params := url.Values{}
 	params.Set("api", api)
 	params.Set("version", version)
@@ -120,19 +140,31 @@ func (c *Client) DoAPI(ctx context.Context, api, version, method string, extraPa
 		}
 	}
 
-	resp, err := c.doRequestWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
+	return params
 }
 
-func (c *Client) doRequest(ctx context.Context, params url.Values) (*APIResponse, error) {
-	reqURL := c.baseURL + "/webapi/entry.cgi?" + params.Encode()
+func (c *Client) doGetRequest(ctx context.Context, params url.Values) (*APIResponse, error) {
+	return c.executeRequest(ctx, params, http.MethodGet)
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+func (c *Client) executeRequest(ctx context.Context, params url.Values, httpMethod string) (*APIResponse, error) {
+	var req *http.Request
+	var err error
+
+	endpoint := c.baseURL + "/webapi/entry.cgi"
+
+	switch httpMethod {
+	case http.MethodPost:
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(params.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	default:
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+params.Encode(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -161,7 +193,7 @@ func (c *Client) doRequest(ctx context.Context, params url.Values) (*APIResponse
 	return &apiResp, nil
 }
 
-func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values) (*APIResponse, error) {
+func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values, httpMethod string) (*APIResponse, error) {
 	var lastErr error
 
 	for attempt := range maxRetries {
@@ -174,7 +206,7 @@ func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values) (*AP
 			}
 		}
 
-		resp, err := c.doRequest(ctx, params)
+		resp, err := c.executeRequest(ctx, params, httpMethod)
 		if err != nil {
 			lastErr = err
 			if isTransientError(err) {

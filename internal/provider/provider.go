@@ -122,6 +122,7 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 	return []func() resource.Resource{
 		NewUserResource,
 		NewGroupResource,
+		NewSharedFolderResource,
 	}
 }
 
@@ -129,5 +130,6 @@ func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.Da
 	return []func() datasource.DataSource{
 		NewUserDataSource,
 		NewGroupDataSource,
+		NewSharedFolderDataSource,
 	}
 }

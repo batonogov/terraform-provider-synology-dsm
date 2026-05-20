@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +108,61 @@ func TestNewClient_InsecureTLS(t *testing.T) {
 	client := NewClient("https://diskstation:5001", "admin", "pass", true)
 	if client.baseURL != "https://diskstation:5001" {
 		t.Errorf("expected baseURL to be preserved, got %q", client.baseURL)
+	}
+}
+
+func TestClient_DoAPIPost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+			t.Errorf("expected Content-Type application/x-www-form-urlencoded, got %s", ct)
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+
+		if r.FormValue("api") != "SYNO.Core.Share" {
+			t.Errorf("expected api SYNO.Core.Share, got %s", r.FormValue("api"))
+		}
+		if r.FormValue("method") != "create" {
+			t.Errorf("expected method create, got %s", r.FormValue("method"))
+		}
+		if r.FormValue("name") != "test-folder" {
+			t.Errorf("expected name test-folder, got %s", r.FormValue("name"))
+		}
+
+		data := `{"name":"test-folder"}`
+		resp := APIResponse{Success: true, Data: json.RawMessage(data)}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin", "password", false)
+	client.sessionID = "test-sid"
+
+	params := url.Values{}
+	params.Set("name", "test-folder")
+	params.Set("shareinfo", `{"name":"test-folder","vol_path":"/volume1"}`)
+
+	data, err := client.DoAPIPost(context.Background(), "SYNO.Core.Share", "1", "create", params)
+	if err != nil {
+		t.Fatalf("DoAPIPost failed: %v", err)
+	}
+
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if result.Name != "test-folder" {
+		t.Errorf("expected name test-folder, got %s", result.Name)
 	}
 }
 

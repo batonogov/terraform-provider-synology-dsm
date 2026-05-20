@@ -8,7 +8,7 @@ Terraform provider для управления [Synology DSM](https://www.synolo
 |--------|----------|--------|
 | `dsm_user` | Управление пользователями | MVP |
 | `dsm_group` | Управление группами | MVP |
-| `dsm_shared_folder` | Общие папки | Roadmap |
+| `dsm_shared_folder` | Общие папки | MVP |
 | `dsm_share_permission` | Права доступа | Roadmap |
 | `dsm_user_quota` | Квоты пользователей | Roadmap |
 
@@ -57,6 +57,13 @@ resource "dsm_group" "developers" {
   name        = "developers"
   description = "Development team"
 }
+
+resource "dsm_shared_folder" "team_data" {
+  name               = "team-data"
+  vol_path           = "/volume1"
+  description        = "Team shared data"
+  enable_recycle_bin = true
+}
 ```
 
 ## Конфигурация провайдера
@@ -101,14 +108,35 @@ resource "dsm_group" "developers" {
 terraform import dsm_group.developers developers
 ```
 
-## Data source: dsm_group
+## Ресурс: dsm_shared_folder
 
 | Атрибут | Тип | Обязательный | Вычисляемый | Описание |
 |---------|-----|-------------|-------------|----------|
-| `id` | string | - | да | Идентификатор (group name) |
-| `name` | string | да | - | Имя группы |
+| `id` | string | - | да | Идентификатор (name) |
+| `name` | string | да | - | Имя общей папки |
+| `vol_path` | string | да | - | Путь к тому (например `/volume1`) |
+| `description` | string | нет | - | Описание |
+| `hidden` | bool | нет | да | Скрыть из сети (default: false) |
+| `enable_recycle_bin` | bool | нет | да | Корзина (default: true) |
+| `uuid` | string | - | да | UUID (read-only) |
+
+### Import
+
+```bash
+terraform import dsm_shared_folder.team_data team-data
+```
+
+## Data source: dsm_shared_folder
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор (name) |
+| `name` | string | да | - | Имя общей папки |
 | `description` | string | - | да | Описание |
-| `gid` | int | - | да | GID (read-only) |
+| `vol_path` | string | - | да | Путь к тому |
+| `uuid` | string | - | да | UUID (read-only) |
+
+## Data source: dsm_group
 
 ### Import
 
