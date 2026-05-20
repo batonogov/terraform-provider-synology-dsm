@@ -117,11 +117,16 @@ func (r *groupResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
+	name := state.ID.ValueString()
+	if name == "" {
+		name = state.Name.ValueString()
+	}
+
 	tflog.Debug(ctx, "Reading DSM group", map[string]interface{}{
-		"name": state.Name.ValueString(),
+		"name": name,
 	})
 
-	group, err := r.client.GetGroup(ctx, state.Name.ValueString())
+	group, err := r.client.GetGroup(ctx, name)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to read group",

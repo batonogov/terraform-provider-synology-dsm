@@ -19,7 +19,6 @@ type CreateGroupRequest struct {
 }
 
 type UpdateGroupRequest struct {
-	Name        string
 	NewName     string
 	Description string
 }
@@ -88,9 +87,7 @@ func (c *Client) UpdateGroup(ctx context.Context, name string, req UpdateGroupRe
 	if req.NewName != "" {
 		params.Set("new_name", req.NewName)
 	}
-	if req.Description != "" {
-		params.Set("description", req.Description)
-	}
+	params.Set("description", req.Description)
 
 	_, err := c.DoAPI(ctx, "SYNO.Core.Group", "1", "set", params)
 	if err != nil {
