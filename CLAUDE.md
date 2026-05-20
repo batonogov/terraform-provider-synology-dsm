@@ -95,6 +95,32 @@ conventional commits → Release Please PR → merge → GitHub Release → GoRe
 - **Never skip conventional commits** — changelog and versioning depend on them
 - Dependabot keeps Go modules and GitHub Actions up to date (weekly, `deps:` / `ci:` prefix)
 
+## Acceptance Test Environment
+
+Tests run against a **virtual DSM** (QEMU via Lima VM + Docker):
+
+```
+task test-env-up      # Start Lima VM + virtual-dsm container
+task test-env-down    # Stop everything
+task test-env-status  # Check status
+```
+
+**Setup:** Lima VM (`.lima/dsm.yaml`, aarch64 QEMU) → Docker inside VM runs `vdsm/virtual-dsm` container (`docker-compose.test.yml`) → DSM API on `localhost:5001` → `scripts/wait-for-dsm.sh` polls until ready (~10-20 min, QEMU emulation is slow).
+
+**Acceptance tests** (`*_acc_test.go` in repo root):
+- `TestAccPreCheck` validates env vars (`TF_ACC`, `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`)
+- `SYNOLOGY_DSM_PASSWORD` can be empty (supports DSM first-login state)
+- Resource tests are currently skipped (`t.Skip`) — virtual DSM in first-login state blocks write APIs (error 3103)
+- Only data source tests are active: `TestAccDataSourceGroup_basic` (reads "administrators"), `TestAccDataSourceUser_basic` (reads "admin")
+
+**Run acceptance tests:**
+```bash
+export SYNOLOGY_DSM_HOST="http://localhost:5001"
+export SYNOLOGY_DSM_USERNAME="admin"
+export SYNOLOGY_DSM_PASSWORD=""
+TF_ACC=1 go test -v -timeout 30m ./...
+```
+
 ## Roadmap
 
 `dsm_share_permission` → `dsm_user_quota` → Synology Drive → Photos
