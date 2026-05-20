@@ -46,7 +46,6 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 ## Client patterns
 
 - **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
-
 - **Simple resources** (user, group): all CRUD via `DoAPI()` (GET). Delete sends name as JSON array.
 - **Shared folder**: create/update via `DoAPIPost()` (POST) with `shareinfo` JSON. Update includes `name_org` so DSM recognizes it as update. Get/list/delete via `DoAPI()` (GET).
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
