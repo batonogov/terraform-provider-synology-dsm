@@ -45,6 +45,7 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 
 ## Client patterns
 
+- **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
 - **Simple resources** (user, group): all CRUD via `DoAPI()` (GET). Delete sends name as JSON array.
 - **Shared folder**: create/update via `DoAPIPost()` (POST) with `shareinfo` JSON. Update includes `name_org` so DSM recognizes it as update. Get/list/delete via `DoAPI()` (GET).
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
@@ -94,6 +95,39 @@ conventional commits → Release Please PR → merge → GitHub Release → GoRe
 - **Never create tags manually** — Release Please manages versions
 - **Never skip conventional commits** — changelog and versioning depend on them
 - Dependabot keeps Go modules and GitHub Actions up to date (weekly, `deps:` / `ci:` prefix)
+
+## CI/CD
+
+- `.github/workflows/test.yml` — unit tests on push/PR
+- `.github/workflows/release-please.yml` — release PR automation on push to main
+- `.github/workflows/release.yml` — GoReleaser on GitHub Release event
+- `.github/dependabot.yml` — weekly dependency updates (gomod + github-actions)
+
+## Acceptance Test Environment
+
+Tests run against a **virtual DSM** (QEMU via Lima VM + Docker):
+
+```
+task test-env-up      # Start Lima VM + virtual-dsm container
+task test-env-down    # Stop everything
+task test-env-status  # Check status
+```
+
+**Setup:** Lima VM (`.lima/dsm.yaml`, aarch64 QEMU) → Docker inside VM runs `vdsm/virtual-dsm` container (`docker-compose.test.yml`) → DSM API on `localhost:5001` → `scripts/wait-for-dsm.sh` polls until ready (~10-20 min, QEMU emulation is slow).
+
+**Acceptance tests** (`*_acc_test.go` in repo root):
+- `TestAccPreCheck` validates env vars (`TF_ACC`, `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`)
+- `SYNOLOGY_DSM_PASSWORD` can be empty (supports DSM first-login state)
+- Resource tests are currently skipped (`t.Skip`) — virtual DSM in first-login state blocks write APIs (error 3103)
+- Only data source tests are active: `TestAccDataSourceGroup_basic` (reads "administrators"), `TestAccDataSourceUser_basic` (reads "admin")
+
+**Run acceptance tests:**
+```bash
+export SYNOLOGY_DSM_HOST="http://localhost:5001"
+export SYNOLOGY_DSM_USERNAME="admin"
+export SYNOLOGY_DSM_PASSWORD=""
+TF_ACC=1 go test -v -timeout 30m ./...
+```
 
 ## Roadmap
 

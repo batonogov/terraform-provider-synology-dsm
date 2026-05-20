@@ -42,3 +42,25 @@ tasks:
     cmds:
       - rm -rf bin/
       - go clean -testcache
+
+  test-env-up:
+    desc: Start Lima VM with virtual-dsm for acceptance tests
+    cmds:
+      - limactl start --name=dsm .lima/dsm.yaml
+      - limactl copy docker-compose.test.yml dsm:/tmp/docker-compose.test.yml
+      - limactl shell dsm sudo docker compose -f /tmp/docker-compose.test.yml up -d
+      - ./scripts/wait-for-dsm.sh
+    status:
+      - limactl list --format '{{.Name}} {{.Status}}' | grep -q '^dsm Running'
+
+  test-env-down:
+    desc: Stop Lima VM with virtual-dsm
+    cmds:
+      - limactl shell dsm sudo docker compose -f /tmp/docker-compose.test.yml down || true
+      - limactl stop dsm
+
+  test-env-status:
+    desc: Check test environment status
+    cmds:
+      - limactl list | grep dsm || echo "Lima VM 'dsm' not found"
+      - limactl shell dsm sudo docker ps 2>/dev/null || echo "Docker not running in VM"

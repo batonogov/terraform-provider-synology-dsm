@@ -21,12 +21,10 @@ func setupGroupTestServer() (*Client, *httptest.Server) {
 
 		case api == "SYNO.Core.Group" && method == "get":
 			name := r.URL.Query().Get("name")
-			data := map[string]interface{}{
-				"name":        name,
-				"description": "Test group",
-				"gid":         65536,
+			groups := []map[string]interface{}{
+				{"name": name, "description": "Test group", "gid": 65536},
 			}
-			raw, _ := json.Marshal(data)
+			raw, _ := json.Marshal(map[string]interface{}{"groups": groups})
 			json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
 
 		case api == "SYNO.Core.Group" && method == "list":
@@ -42,11 +40,10 @@ func setupGroupTestServer() (*Client, *httptest.Server) {
 			if name == "" {
 				name = r.URL.Query().Get("name")
 			}
-			data := map[string]interface{}{
-				"name": name,
-				"gid":  65536,
+			groups := []map[string]interface{}{
+				{"name": name, "gid": 65536},
 			}
-			raw, _ := json.Marshal(data)
+			raw, _ := json.Marshal(map[string]interface{}{"groups": groups})
 			json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
 
 		case api == "SYNO.Core.Group" && method == "delete":
