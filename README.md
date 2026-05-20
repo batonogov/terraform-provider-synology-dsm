@@ -7,7 +7,7 @@ Terraform provider для управления [Synology DSM](https://www.synolo
 | Ресурс | Описание | Статус |
 |--------|----------|--------|
 | `dsm_user` | Управление пользователями | MVP |
-| `dsm_group` | Управление группами | Roadmap |
+| `dsm_group` | Управление группами | MVP |
 | `dsm_shared_folder` | Общие папки | Roadmap |
 | `dsm_share_permission` | Права доступа | Roadmap |
 | `dsm_user_quota` | Квоты пользователей | Roadmap |
@@ -52,6 +52,11 @@ resource "dsm_user" "john" {
   email       = "john.doe@example.com"
   groups      = ["users"]
 }
+
+resource "dsm_group" "developers" {
+  name        = "developers"
+  description = "Development team"
+}
 ```
 
 ## Конфигурация провайдера
@@ -80,6 +85,30 @@ resource "dsm_user" "john" {
 | `disabled` | bool | нет | да | Отключён (default: false) |
 | `groups` | list(string) | нет | - | Список групп |
 | `uid` | int | - | да | UID (read-only) |
+
+## Ресурс: dsm_group
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор (group name) |
+| `name` | string | да | - | Имя группы |
+| `description` | string | нет | - | Описание |
+| `gid` | int | - | да | GID (read-only) |
+
+### Import
+
+```bash
+terraform import dsm_group.developers developers
+```
+
+## Data source: dsm_group
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор (group name) |
+| `name` | string | да | - | Имя группы |
+| `description` | string | - | да | Описание |
+| `gid` | int | - | да | GID (read-only) |
 
 ### Import
 
