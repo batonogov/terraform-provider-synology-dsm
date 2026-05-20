@@ -8,7 +8,8 @@ services:
       DISK_SIZE: "32G"
       RAM_SIZE: "8G"
       CPU_CORES: "6"
-      DSM_PASSWORD: "admin"
+      # DSM_PASSWORD is ignored in first-login state — write APIs are blocked until
+      # the initial setup wizard is completed via web UI.
     volumes:
       - dsm_storage:/storage
     stop_grace_period: 2m

@@ -95,6 +95,13 @@ conventional commits → Release Please PR → merge → GitHub Release → GoRe
 - **Never skip conventional commits** — changelog and versioning depend on them
 - Dependabot keeps Go modules and GitHub Actions up to date (weekly, `deps:` / `ci:` prefix)
 
+## CI/CD
+
+- `.github/workflows/test.yml` — unit tests on push/PR
+- `.github/workflows/release-please.yml` — release PR automation on push to main
+- `.github/workflows/release.yml` — GoReleaser on GitHub Release event
+- `.github/dependabot.yml` — weekly dependency updates (gomod + github-actions)
+
 ## Acceptance Test Environment
 
 Tests run against a **virtual DSM** (QEMU via Lima VM + Docker):

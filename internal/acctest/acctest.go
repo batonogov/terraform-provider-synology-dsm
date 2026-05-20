@@ -41,9 +41,9 @@ func ProviderConfig() string {
 
 	return fmt.Sprintf(`
 provider "dsm" {
-  host     = "%s"
-  username = "%s"
-  password = "%s"
+  host     = %q
+  username = %q
+  password = %q
   insecure = true
 }
 `, host, username, password)

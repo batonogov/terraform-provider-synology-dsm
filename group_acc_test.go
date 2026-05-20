@@ -65,12 +65,11 @@ func TestAccDataSourceGroup_basic(t *testing.T) {
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
 			{
-				Config: fmt.Sprintf(`
-%s
+				Config: acctest.ComposeTestResourceConfig(fmt.Sprintf(`
 data "dsm_group" "test" {
-  name = "%s"
+  name = %q
 }
-`, acctest.ProviderConfig(), groupName),
+`, groupName)),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("data.dsm_group.test", "name", groupName),
 					resource.TestCheckResourceAttrSet("data.dsm_group.test", "id"),

@@ -69,12 +69,11 @@ func TestAccDataSourceUser_basic(t *testing.T) {
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
 			{
-				Config: fmt.Sprintf(`
-%s
+				Config: acctest.ComposeTestResourceConfig(fmt.Sprintf(`
 data "dsm_user" "test" {
-  name = "%s"
+  name = %q
 }
-`, acctest.ProviderConfig(), userName),
+`, userName)),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("data.dsm_user.test", "name", userName),
 					resource.TestCheckResourceAttrSet("data.dsm_user.test", "id"),

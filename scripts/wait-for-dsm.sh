@@ -2,7 +2,7 @@
 # Wait for Synology DSM to be ready and API accessible.
 set -euo pipefail
 
-HOST="${DSM_HOST:-http://localhost:5000}"
+HOST="${DSM_HOST:-http://localhost:5001}"
 TIMEOUT="${DSM_TIMEOUT:-1200}" # 20 minutes default (QEMU emulation is slow)
 
 echo "Waiting for DSM at ${HOST} (timeout: ${TIMEOUT}s)..."
