@@ -1,0 +1,45 @@
+# Lima VM for Synology DSM acceptance tests
+# Usage: limactl start --name=dsm .lima/dsm.yaml
+
+vmType: qemu
+os: Linux
+arch: x86_64
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: x86_64
+
+cpus: 4
+memory: 8GiB
+disk: 30GiB
+
+mounts:
+  - location: "~"
+    writable: false
+  - location: "~/.ssh"
+    writable: false
+
+portForwards:
+  - guestPort: 5000
+    hostPort: 5000
+    proto: tcp
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eu -o pipefail
+      apt-get update
+      apt-get install -y docker.io docker-compose-v2
+      usermod -aG docker lima
+
+firmware:
+  legacyBIOS: true
+
+ssh:
+  localPort: 0
+  loadDotSSHPubKeys: true
