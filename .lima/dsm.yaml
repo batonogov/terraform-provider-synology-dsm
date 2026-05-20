@@ -3,15 +3,15 @@
 
 vmType: qemu
 os: Linux
-arch: x86_64
+arch: aarch64
 
 images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
-    arch: x86_64
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
 
-cpus: 4
-memory: 8GiB
-disk: 30GiB
+cpus: 8
+memory: 16GiB
+disk: 50GiB
 
 mounts:
   - location: "~"
@@ -21,7 +21,7 @@ mounts:
 
 portForwards:
   - guestPort: 5000
-    hostPort: 5000
+    hostPort: 5001
     proto: tcp
 
 containerd:

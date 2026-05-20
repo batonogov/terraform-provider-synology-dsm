@@ -79,7 +79,7 @@ func (p *synologyProvider) Configure(ctx context.Context, req provider.Configure
 	}
 
 	password := config.Password.ValueString()
-	if password == "" {
+	if config.Password.IsNull() {
 		password = os.Getenv("SYNOLOGY_DSM_PASSWORD")
 	}
 
@@ -91,9 +91,11 @@ func (p *synologyProvider) Configure(ctx context.Context, req provider.Configure
 		resp.Diagnostics.AddError("Missing username", "Set username in provider config or SYNOLOGY_DSM_USERNAME env var")
 		return
 	}
-	if password == "" {
-		resp.Diagnostics.AddError("Missing password", "Set password in provider config or SYNOLOGY_DSM_PASSWORD env var")
-		return
+	if config.Password.IsNull() {
+		if _, ok := os.LookupEnv("SYNOLOGY_DSM_PASSWORD"); !ok {
+			resp.Diagnostics.AddError("Missing password", "Set password in provider config or SYNOLOGY_DSM_PASSWORD env var")
+			return
+		}
 	}
 
 	insecure := config.Insecure.ValueBool()

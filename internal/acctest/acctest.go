@@ -7,7 +7,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
-	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/provider"
 )
@@ -22,8 +21,8 @@ func TestAccPreCheck(t *testing.T) {
 	if v := os.Getenv("SYNOLOGY_DSM_USERNAME"); v == "" {
 		t.Fatal("SYNOLOGY_DSM_USERNAME must be set for acceptance tests")
 	}
-	if v := os.Getenv("SYNOLOGY_DSM_PASSWORD"); v == "" {
-		t.Fatal("SYNOLOGY_DSM_PASSWORD must be set for acceptance tests")
+	if _, ok := os.LookupEnv("SYNOLOGY_DSM_PASSWORD"); !ok {
+		t.Fatal("SYNOLOGY_DSM_PASSWORD must be set for acceptance tests (use empty value for first-login setup)")
 	}
 }
 
@@ -52,12 +51,4 @@ provider "dsm" {
 
 func ComposeTestResourceConfig(config string) string {
 	return ProviderConfig() + config
-}
-
-func CheckResourceAttr(name, attr, value string) resource.TestCheckFunc {
-	return resource.TestCheckResourceAttr(name, attr, value)
-}
-
-func CheckResourceAttrSet(name, attr string) resource.TestCheckFunc {
-	return resource.TestCheckResourceAttrSet(name, attr)
 }

@@ -6,8 +6,9 @@ services:
       - "5000:5000"
     environment:
       DISK_SIZE: "32G"
-      RAM_SIZE: "2G"
-      CPU_CORES: "2"
+      RAM_SIZE: "8G"
+      CPU_CORES: "6"
+      DSM_PASSWORD: "admin"
     volumes:
       - dsm_storage:/storage
     stop_grace_period: 2m
