@@ -156,4 +156,4 @@ task clean       # Очистка артефактов
 
 ## Лицензия
 
-[MPL-2.0](LICENSE)
+[MIT](LICENSE)
