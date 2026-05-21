@@ -65,7 +65,7 @@ resource "dsm_shared_folder" "team_data" {
   enable_recycle_bin = true
 }
 
-resource "dsm_share_permission" "john_read" {
+resource "dsm_share_permission" "john_rw" {
   share_name      = "team-data"
   user_group_type = "local_user"
   principal_name  = "john.doe"
@@ -140,18 +140,6 @@ terraform import dsm_group.developers developers
 terraform import dsm_shared_folder.team_data team-data
 ```
 
-## Data source: dsm_shared_folder
-
-| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
-|---------|-----|-------------|-------------|----------|
-| `id` | string | - | да | Идентификатор (name) |
-| `name` | string | да | - | Имя общей папки |
-| `description` | string | - | да | Описание |
-| `vol_path` | string | - | да | Путь к тому |
-| `uuid` | string | - | да | UUID (read-only) |
-
-## Data source: dsm_group
-
 ## Ресурс: dsm_share_permission
 
 | Атрибут | Тип | Обязательный | Вычисляемый | Описание |
@@ -165,7 +153,25 @@ terraform import dsm_shared_folder.team_data team-data
 ### Import
 
 ```bash
-terraform import dsm_share_permission.john_read team-data:local_user:john.doe
+terraform import dsm_share_permission.john_rw team-data:local_user:john.doe
+```
+
+## Data source: dsm_shared_folder
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор (name) |
+| `name` | string | да | - | Имя общей папки |
+| `description` | string | - | да | Описание |
+| `vol_path` | string | - | да | Путь к тому |
+| `uuid` | string | - | да | UUID (read-only) |
+
+## Data source: dsm_group
+
+### Import
+
+```bash
+terraform import dsm_user.john john.doe
 ```
 
 ## Data source: dsm_share_permission
@@ -177,14 +183,6 @@ terraform import dsm_share_permission.john_read team-data:local_user:john.doe
 | `user_group_type` | string | да | - | Тип: `local_user` или `local_group` |
 | `principal_name` | string | да | - | Имя пользователя или группы |
 | `permission` | string | - | да | Текущее право доступа |
-
-## Data source: dsm_group
-
-### Import
-
-```bash
-terraform import dsm_user.john john.doe
-```
 
 ## Разработка
 

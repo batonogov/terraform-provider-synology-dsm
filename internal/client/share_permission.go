@@ -79,14 +79,18 @@ func (c *Client) SetSharePermission(ctx context.Context, req SetSharePermissionR
 	found := false
 	for i := range perms {
 		if perms[i].Name == req.PrincipalName {
-			applyPermissionMap(&perms[i], req.Permission)
+			if err := applyPermissionMap(&perms[i], req.Permission); err != nil {
+				return nil, err
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
 		p := SharePermission{Name: req.PrincipalName}
-		applyPermissionMap(&p, req.Permission)
+		if err := applyPermissionMap(&p, req.Permission); err != nil {
+			return nil, err
+		}
 		perms = append(perms, p)
 	}
 
@@ -128,7 +132,7 @@ func (c *Client) setAllPermissions(ctx context.Context, shareName, userGroupType
 	return err
 }
 
-func applyPermissionMap(p *SharePermission, permission string) {
+func applyPermissionMap(p *SharePermission, permission string) error {
 	p.IsReadonly = false
 	p.IsWritable = false
 	p.IsDeny = false
@@ -140,7 +144,10 @@ func applyPermissionMap(p *SharePermission, permission string) {
 		p.IsWritable = true
 	case "no_access":
 		p.IsDeny = true
+	default:
+		return fmt.Errorf("unknown permission %q: must be read_only, read_write, or no_access", permission)
 	}
+	return nil
 }
 
 func PermissionFromFlags(p SharePermission) string {
@@ -159,12 +166,16 @@ func PermissionFromFlags(p SharePermission) string {
 func buildPermissionPayload(perms []SharePermission) string {
 	items := make([]map[string]interface{}, len(perms))
 	for i, p := range perms {
-		items[i] = map[string]interface{}{
+		m := map[string]interface{}{
 			"name":        p.Name,
 			"is_readonly": p.IsReadonly,
 			"is_writable": p.IsWritable,
 			"is_deny":     p.IsDeny,
 		}
+		if p.Inherit != "" {
+			m["inherit"] = p.Inherit
+		}
+		items[i] = m
 	}
 	raw, _ := json.Marshal(items)
 	return string(raw)

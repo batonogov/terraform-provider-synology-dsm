@@ -159,6 +159,24 @@ func TestClient_SetSharePermission_Update(t *testing.T) {
 	if perm.Name != "john" {
 		t.Errorf("expected name john, got %q", perm.Name)
 	}
+	if !perm.IsWritable {
+		t.Errorf("expected john to be writable after update, got readonly=%v writable=%v deny=%v", perm.IsReadonly, perm.IsWritable, perm.IsDeny)
+	}
+}
+
+func TestClient_SetSharePermission_InvalidPermission(t *testing.T) {
+	client, server := setupSharePermissionTestServer()
+	defer server.Close()
+
+	_, err := client.SetSharePermission(context.Background(), SetSharePermissionRequest{
+		ShareName:     "data",
+		UserGroupType: "local_user",
+		PrincipalName: "john",
+		Permission:    "invalid",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid permission")
+	}
 }
 
 func TestClient_DeleteSharePermission(t *testing.T) {
