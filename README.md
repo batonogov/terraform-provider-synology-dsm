@@ -9,7 +9,7 @@ Terraform provider для управления [Synology DSM](https://www.synolo
 | `dsm_user` | Управление пользователями | MVP |
 | `dsm_group` | Управление группами | MVP |
 | `dsm_shared_folder` | Общие папки | MVP |
-| `dsm_share_permission` | Права доступа | Roadmap |
+| `dsm_share_permission` | Права доступа | MVP |
 | `dsm_user_quota` | Квоты пользователей | Roadmap |
 
 ## Требования
@@ -63,6 +63,20 @@ resource "dsm_shared_folder" "team_data" {
   vol_path           = "/volume1"
   description        = "Team shared data"
   enable_recycle_bin = true
+}
+
+resource "dsm_share_permission" "john_rw" {
+  share_name      = "team-data"
+  user_group_type = "local_user"
+  principal_name  = "john.doe"
+  permission      = "read_write"
+}
+
+resource "dsm_share_permission" "developers_readonly" {
+  share_name      = "team-data"
+  user_group_type = "local_group"
+  principal_name  = "developers"
+  permission      = "read_only"
 }
 ```
 
@@ -126,6 +140,22 @@ terraform import dsm_group.developers developers
 terraform import dsm_shared_folder.team_data team-data
 ```
 
+## Ресурс: dsm_share_permission
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор (share_name:user_group_type:principal_name) |
+| `share_name` | string | да | - | Имя общей папки |
+| `user_group_type` | string | да | - | Тип: `local_user` или `local_group` |
+| `principal_name` | string | да | - | Имя пользователя или группы |
+| `permission` | string | да | - | Право: `read_only`, `read_write` или `no_access` |
+
+### Import
+
+```bash
+terraform import dsm_share_permission.john_rw team-data:local_user:john.doe
+```
+
 ## Data source: dsm_shared_folder
 
 | Атрибут | Тип | Обязательный | Вычисляемый | Описание |
@@ -143,6 +173,16 @@ terraform import dsm_shared_folder.team_data team-data
 ```bash
 terraform import dsm_user.john john.doe
 ```
+
+## Data source: dsm_share_permission
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор |
+| `share_name` | string | да | - | Имя общей папки |
+| `user_group_type` | string | да | - | Тип: `local_user` или `local_group` |
+| `principal_name` | string | да | - | Имя пользователя или группы |
+| `permission` | string | - | да | Текущее право доступа |
 
 ## Разработка
 
