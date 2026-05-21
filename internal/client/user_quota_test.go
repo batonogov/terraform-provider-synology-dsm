@@ -158,6 +158,15 @@ func TestClient_DeleteUserQuota(t *testing.T) {
 	}
 }
 
+func TestClient_DeleteUserQuota_NotFound(t *testing.T) {
+	client, server := setupUserQuotaTestServer()
+	defer server.Close()
+
+	if err := client.DeleteUserQuota(context.Background(), "data", "nonexistent"); err != nil {
+		t.Fatalf("DeleteUserQuota for nonexistent user should not error, got: %v", err)
+	}
+}
+
 func TestBuildUserQuotaID(t *testing.T) {
 	id := BuildUserQuotaID("data", "john")
 	if id != "data:john" {

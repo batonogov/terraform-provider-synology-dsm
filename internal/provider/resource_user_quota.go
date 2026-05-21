@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -64,6 +65,9 @@ func (r *userQuotaResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"quota_size": schema.Int64Attribute{
 				Required:    true,
 				Description: "Quota size in bytes. 0 means unlimited.",
+				Validators: []validator.Int64{
+					newInt64AtLeastValidator(0),
+				},
 			},
 			"quota_used": schema.Int64Attribute{
 				Computed:    true,
@@ -233,4 +237,33 @@ func (r *userQuotaResource) ImportState(ctx context.Context, req resource.Import
 		ShareName: types.StringValue(parts[0]),
 		Username:  types.StringValue(parts[1]),
 	})...)
+}
+
+type int64AtLeastValidator struct {
+	min int64
+}
+
+func newInt64AtLeastValidator(min int64) int64AtLeastValidator {
+	return int64AtLeastValidator{min: min}
+}
+
+func (v int64AtLeastValidator) Description(_ context.Context) string {
+	return fmt.Sprintf("must be at least %d", v.min)
+}
+
+func (v int64AtLeastValidator) MarkdownDescription(_ context.Context) string {
+	return v.Description(nil)
+}
+
+func (v int64AtLeastValidator) ValidateInt64(_ context.Context, req validator.Int64Request, resp *validator.Int64Response) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	if req.ConfigValue.ValueInt64() < v.min {
+		resp.Diagnostics.AddError(
+			"Invalid value",
+			fmt.Sprintf("value must be at least %d, got: %d", v.min, req.ConfigValue.ValueInt64()),
+		)
+	}
 }

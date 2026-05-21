@@ -99,11 +99,17 @@ func (c *Client) DeleteUserQuota(ctx context.Context, shareName, username string
 		return err
 	}
 
+	found := false
 	for i := range quotas {
 		if quotas[i].Username == username {
 			quotas[i].QuotaSize = 0
+			found = true
 			break
 		}
+	}
+
+	if !found {
+		return nil
 	}
 
 	if err := c.setAllQuotas(ctx, shareName, quotas); err != nil {
@@ -145,8 +151,7 @@ func parseUserQuota(raw json.RawMessage) (*UserQuota, error) {
 
 	if v, ok := m["username"].(string); ok {
 		q.Username = v
-	}
-	if v, ok := m["name"].(string); ok {
+	} else if v, ok := m["name"].(string); ok {
 		q.Username = v
 	}
 	if v, ok := m["quota_size"].(float64); ok {
