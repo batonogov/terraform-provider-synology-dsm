@@ -10,7 +10,7 @@ Terraform provider для управления [Synology DSM](https://www.synolo
 | `dsm_group` | Управление группами | MVP |
 | `dsm_shared_folder` | Общие папки | MVP |
 | `dsm_share_permission` | Права доступа | MVP |
-| `dsm_user_quota` | Квоты пользователей | Roadmap |
+| `dsm_user_quota` | Квоты пользователей | MVP |
 
 ## Требования
 
@@ -77,6 +77,12 @@ resource "dsm_share_permission" "developers_readonly" {
   user_group_type = "local_group"
   principal_name  = "developers"
   permission      = "read_only"
+}
+
+resource "dsm_user_quota" "john_quota" {
+  share_name = "team-data"
+  username   = "john.doe"
+  quota_size = 10737418240  # 10 GB
 }
 ```
 
@@ -156,6 +162,22 @@ terraform import dsm_shared_folder.team_data team-data
 terraform import dsm_share_permission.john_rw team-data:local_user:john.doe
 ```
 
+## Ресурс: dsm_user_quota
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор (share_name:username) |
+| `share_name` | string | да | - | Имя общей папки |
+| `username` | string | да | - | Имя пользователя |
+| `quota_size` | int | да | - | Квота в байтах (0 = безлимит) |
+| `quota_used` | int | - | да | Использовано байт |
+
+### Import
+
+```bash
+terraform import dsm_user_quota.john_quota team-data:john.doe
+```
+
 ## Data source: dsm_shared_folder
 
 | Атрибут | Тип | Обязательный | Вычисляемый | Описание |
@@ -183,6 +205,16 @@ terraform import dsm_user.john john.doe
 | `user_group_type` | string | да | - | Тип: `local_user` или `local_group` |
 | `principal_name` | string | да | - | Имя пользователя или группы |
 | `permission` | string | - | да | Текущее право доступа |
+
+## Data source: dsm_user_quota
+
+| Атрибут | Тип | Обязательный | Вычисляемый | Описание |
+|---------|-----|-------------|-------------|----------|
+| `id` | string | - | да | Идентификатор |
+| `share_name` | string | да | - | Имя общей папки |
+| `username` | string | да | - | Имя пользователя |
+| `quota_size` | int | - | да | Квота в байтах |
+| `quota_used` | int | - | да | Использовано байт |
 
 ## Разработка
 
