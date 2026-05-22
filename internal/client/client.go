@@ -155,7 +155,21 @@ func (c *Client) executeRequest(ctx context.Context, params url.Values, httpMeth
 
 	switch httpMethod {
 	case http.MethodPost:
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(params.Encode()))
+		queryParams := url.Values{}
+		if params.Get("_sid") != "" {
+			queryParams.Set("_sid", params.Get("_sid"))
+		}
+		if params.Get("SynoToken") != "" {
+			queryParams.Set("SynoToken", params.Get("SynoToken"))
+		}
+		params.Del("_sid")
+		params.Del("SynoToken")
+
+		reqURL := endpoint
+		if len(queryParams) > 0 {
+			reqURL += "?" + queryParams.Encode()
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(params.Encode()))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
