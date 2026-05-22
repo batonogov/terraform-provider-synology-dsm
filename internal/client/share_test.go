@@ -42,7 +42,7 @@ func setupShareTestServer() (*Client, *httptest.Server) {
 				"vol_path":   "/volume1",
 				"uuid":       "test-uuid-1234",
 				"hidden":     false,
-				"recyclebin": true,
+				"enable_recycle_bin": true,
 			}
 			raw, _ := json.Marshal(data)
 			json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})

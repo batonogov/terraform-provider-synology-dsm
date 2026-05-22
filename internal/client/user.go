@@ -63,18 +63,21 @@ func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, 
 
 func (c *Client) GetUser(ctx context.Context, name string) (*User, error) {
 	params := url.Values{}
-	params.Set("name", name)
+	params.Set("offset", "0")
+	params.Set("limit", "-1")
+	params.Set("additional", `["description","email","disabled","groups"]`)
 
-	data, err := c.DoAPI(ctx, "SYNO.Core.User", "1", "get", params)
+	data, err := c.DoAPI(ctx, "SYNO.Core.User", "1", "list", params)
 	if err != nil {
 		return nil, fmt.Errorf("get user %q: %w", name, err)
 	}
 
 	var result struct {
 		Users []json.RawMessage `json:"users"`
+		Total int               `json:"total"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("parse user get response: %w", err)
+		return nil, fmt.Errorf("parse user list response: %w", err)
 	}
 
 	for _, raw := range result.Users {

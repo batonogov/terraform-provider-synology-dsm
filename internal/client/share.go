@@ -150,7 +150,9 @@ func parseShare(raw json.RawMessage) (*Share, error) {
 	if v, ok := m["hidden"].(bool); ok {
 		s.Hidden = v
 	}
-	if v, ok := m["recyclebin"].(bool); ok {
+	if v, ok := m["enable_recycle_bin"].(bool); ok {
+		s.EnableRecycleBin = v
+	} else if v, ok := m["recyclebin"].(bool); ok {
 		s.EnableRecycleBin = v
 	}
 

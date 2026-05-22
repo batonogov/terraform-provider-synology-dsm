@@ -50,6 +50,7 @@ tasks:
       - limactl copy docker-compose.test.yml dsm:/tmp/docker-compose.test.yml
       - limactl shell dsm sudo docker compose -f /tmp/docker-compose.test.yml up -d
       - ./scripts/wait-for-dsm.sh
+      - ./scripts/setup-dsm.sh
     status:
       - limactl list --format '{{.Name}} {{.Status}}' | grep -q '^dsm Running'
 
