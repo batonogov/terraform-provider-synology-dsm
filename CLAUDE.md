@@ -22,8 +22,8 @@ Run a single test: `go test -v -run TestClient_CreateUser ./internal/client/`
 Terraform provider for Synology DSM using Plugin Framework. Two layers:
 
 **`internal/client/`** — Synology DSM HTTP API client
-- `client.go`: Auth (SYNO.API.Auth v7), session management (SID + SynoToken), `DoAPI()` for GET requests, `DoAPIPost()` for POST requests, retry with exponential backoff
-- `user.go`, `group.go`, `share.go`: CRUD methods per resource, call `client.DoAPI()` or `client.DoAPIPost()`
+- `client.go`: Auth (SYNO.API.Auth v7), session management (SID + SynoToken), `DoAPI()` for GET requests, `DoAPIPost()` for POST requests (SID/SynoToken in query string, other params in body), retry with exponential backoff
+- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`: CRUD methods per resource
 
 **`internal/provider/`** — Terraform Plugin Framework wiring
 - `provider.go`: Provider schema (host/username/password/insecure), Configure creates client and logs in
@@ -38,17 +38,20 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 
 - **Most APIs use GET** — user/group operations send params as query string
 - **Shared folder uses POST** — `SYNO.Core.Share` create/update send `shareinfo` as form-encoded POST body
-- **`_sid` and `SynoToken` must be in query string for POST requests** — DSM validates session from URL params, not POST body. Current `DoAPIPost()` sends them in body which causes error 119 on virtual DSM. This is a known bug.
+- **`_sid` and `SynoToken` must be in query string for POST requests** — DSM validates session from URL params, not POST body. `DoAPIPost()` handles this by moving them from body to query string.
 - **Auth version 7** — `SYNO.API.Auth` version 7 with `enable_syno_token=yes`
 - **Session via `_sid`** — Login returns SID, passed as `_sid` query param (no cookies needed with `format=sid`)
 - Error 105 = "session does not have permission" — usually means wrong HTTP method or missing SynoToken
 - Error 119 = "SID not found or invalid" — typically means SID not in query string for POST, or session expired
+- Error 3301 = "share already exists"
+- Error 3106 = "user not found" (from `get` method with `additional` param)
 
 ## Client patterns
 
+- **User `get` returns minimal data without `additional`** — only `name` and `uid`. To get `description`, `email`, `disabled`, `groups` use `list` method with `additional=["description","email","disabled","groups"]` and filter by name.
 - **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
 - **Simple resources** (user, group): all CRUD via `DoAPI()` (GET). Delete sends name as JSON array.
-- **Shared folder**: create/update via `DoAPIPost()` (POST) with `shareinfo` JSON. Update includes `name_org` so DSM recognizes it as update. Get/list/delete via `DoAPI()` (GET).
+- **Shared folder**: create/update via `DoAPIPost()` (POST) with `shareinfo` JSON. Update includes `name_org` so DSM recognizes it as update. Get/list/delete via `DoAPI()` (GET). API returns `enable_recycle_bin` (not `recyclebin`).
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
 
 ## Resource implementation pattern
@@ -114,15 +117,24 @@ task test-env-down    # Stop everything
 task test-env-status  # Check status
 ```
 
-**Setup:** Lima VM (`.lima/dsm.yaml`, aarch64 QEMU) → Docker inside VM runs `vdsm/virtual-dsm` container (`docker-compose.test.yml`) → DSM API on `localhost:5001` → `scripts/wait-for-dsm.sh` polls until ready (~10-20 min, QEMU emulation is slow).
+**Setup:** Lima VM (`.lima/dsm.yaml`, aarch64 QEMU) → Docker inside VM runs `vdsm/virtual-dsm` container (`docker-compose.test.yml`) → DSM API on `localhost:5001` → `scripts/wait-for-dsm.sh` polls until ready (~10-20 min on cold start, seconds on restart with saved state).
+
+**Virtual DSM specifics:**
+- Login with empty password (`admin`/`""`)
+- No shared folders by default — tests must create them
+- No `homes` share — don't reference it in tests
+- User quota API returns error 102 — not supported on virtual DSM
 
 **Acceptance tests** (`*_acc_test.go` in repo root):
 - `TestAccPreCheck` validates env vars (`TF_ACC`, `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`)
 - `SYNOLOGY_DSM_PASSWORD` can be empty (supports DSM first-login state)
 - Tests use `internal/acctest` package — `ComposeTestResourceConfig()` wraps config with provider block
 - Each resource has: basic create, import, and data source tests
-- Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency in the test config
-- Resource tests for user and group pass against virtual DSM. Shared folder tests fail due to DoAPIPost SID bug (error 119).
+- Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency
+
+**Current acc-test status (5/14 PASS):**
+- PASS: `TestAccGroup_basic`, `TestAccDataSourceGroup_basic`, `TestAccSharedFolder_basic`, `TestAccUser_basic`, `TestAccDataSourceUser_basic`
+- FAIL: import tests (need two-step config), user_quota (error 102 on virtual DSM), share_permission (depends on shared folder state)
 
 **Run acceptance tests:**
 ```bash
@@ -134,8 +146,10 @@ TF_ACC=1 go test -v -timeout 30m ./...
 
 ## Known Issues
 
-- **`DoAPIPost()` sends `_sid`/`SynoToken` in POST body** — DSM requires them in query string. Causes error 119 on shared folder create/update. Fix: move SID/token to URL query params in `executeRequest()` for POST method.
-- **`parseUser()` field names may not match real API** — description/email drift after create. The real DSM API response field names need verification against actual API output.
+- **Import tests fail** — `Resource specified by ResourceName couldn't be found`. Import tests need a two-step approach: first create the resource, then import it in a separate step.
+- **User quota API not supported on virtual DSM** — `SYNO.Core.Share.UserQuota` returns error 102. Tests should skip on virtual DSM or use `t.Skip` with a note.
+- **Test state pollution** — acc tests don't clean up created resources between runs, causing "already exists" (3301) errors on shared folders. Consider adding unique suffixes or explicit cleanup.
+- **Short SID lifetime on virtual DSM** — sessions expire quickly. Tests that make many API calls may hit error 119.
 
 ## Roadmap
 
