@@ -34,14 +34,15 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 
 ## Critical Synology DSM API Details
 
-- **Developed against DSM 7.3.2** on RS4021xs+ — API behavior may differ on DSM 6.x
+- **Developed against DSM 7.2.2** (virtual DSM) and DSM 7.3.2 on RS4021xs+ — API behavior may differ on DSM 6.x
 
 - **Most APIs use GET** — user/group operations send params as query string
 - **Shared folder uses POST** — `SYNO.Core.Share` create/update send `shareinfo` as form-encoded POST body
-- **SynoToken required** — CSRF token from login response, passed as query param in every request
+- **`_sid` and `SynoToken` must be in query string for POST requests** — DSM validates session from URL params, not POST body. Current `DoAPIPost()` sends them in body which causes error 119 on virtual DSM. This is a known bug.
 - **Auth version 7** — `SYNO.API.Auth` version 7 with `enable_syno_token=yes`
 - **Session via `_sid`** — Login returns SID, passed as `_sid` query param (no cookies needed with `format=sid`)
 - Error 105 = "session does not have permission" — usually means wrong HTTP method or missing SynoToken
+- Error 119 = "SID not found or invalid" — typically means SID not in query string for POST, or session expired
 
 ## Client patterns
 
@@ -118,8 +119,10 @@ task test-env-status  # Check status
 **Acceptance tests** (`*_acc_test.go` in repo root):
 - `TestAccPreCheck` validates env vars (`TF_ACC`, `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`)
 - `SYNOLOGY_DSM_PASSWORD` can be empty (supports DSM first-login state)
-- Resource tests are currently skipped (`t.Skip`) — virtual DSM in first-login state blocks write APIs (error 3103)
-- Only data source tests are active: `TestAccDataSourceGroup_basic` (reads "administrators"), `TestAccDataSourceUser_basic` (reads "admin")
+- Tests use `internal/acctest` package — `ComposeTestResourceConfig()` wraps config with provider block
+- Each resource has: basic create, import, and data source tests
+- Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency in the test config
+- Resource tests for user and group pass against virtual DSM. Shared folder tests fail due to DoAPIPost SID bug (error 119).
 
 **Run acceptance tests:**
 ```bash
@@ -129,6 +132,11 @@ export SYNOLOGY_DSM_PASSWORD=""
 TF_ACC=1 go test -v -timeout 30m ./...
 ```
 
+## Known Issues
+
+- **`DoAPIPost()` sends `_sid`/`SynoToken` in POST body** — DSM requires them in query string. Causes error 119 on shared folder create/update. Fix: move SID/token to URL query params in `executeRequest()` for POST method.
+- **`parseUser()` field names may not match real API** — description/email drift after create. The real DSM API response field names need verification against actual API output.
+
 ## Roadmap
 
-`dsm_share_permission` → `dsm_user_quota` → Synology Drive → Photos
+Synology Drive → Photos

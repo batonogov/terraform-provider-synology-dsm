@@ -10,7 +10,6 @@ import (
 )
 
 func TestAccUser_basic(t *testing.T) {
-	t.Skip("skipped: DSM in first-login setup state, resource creation blocked")
 	acctest.TestAccPreCheck(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
@@ -37,7 +36,6 @@ resource "dsm_user" "test" {
 }
 
 func TestAccUser_import(t *testing.T) {
-	t.Skip("skipped: DSM in first-login setup state, resource creation blocked")
 	acctest.TestAccPreCheck(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),

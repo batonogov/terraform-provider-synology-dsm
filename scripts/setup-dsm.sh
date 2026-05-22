@@ -15,7 +15,7 @@ echo "Setting up DSM at ${HOST} (timeout: ${TIMEOUT}s)..."
 api_call() {
     local method="$1" endpoint="$2"
     shift 2
-    curl -sf -X "${method}" "${HOST}/webapi/entry.cgi" "$@" 2>/dev/null
+    curl -sf -X "${method}" "${HOST}/webapi/entry.cgi${endpoint}" "$@" 2>/dev/null
 }
 
 api_get() {

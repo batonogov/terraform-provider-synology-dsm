@@ -8,7 +8,6 @@ import (
 )
 
 func TestAccSharedFolder_basic(t *testing.T) {
-	t.Skip("skipped: DSM in first-login setup state, resource creation blocked")
 	acctest.TestAccPreCheck(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
@@ -36,7 +35,6 @@ resource "dsm_shared_folder" "test" {
 }
 
 func TestAccSharedFolder_import(t *testing.T) {
-	t.Skip("skipped: DSM in first-login setup state, resource creation blocked")
 	acctest.TestAccPreCheck(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
