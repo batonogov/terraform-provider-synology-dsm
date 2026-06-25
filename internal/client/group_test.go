@@ -59,7 +59,7 @@ func setupGroupTestServer() (*Client, *httptest.Server) {
 
 	server := httptest.NewServer(mux)
 	client := NewClient(server.URL, "admin", "password", false)
-	client.sessionID = "test-sid"
+	client.setSession("test-sid", "")
 
 	return client, server
 }

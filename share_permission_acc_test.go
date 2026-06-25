@@ -42,6 +42,7 @@ func TestAccSharePermission_import(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
+			// Step 1: create the shared folder + permission.
 			{
 				Config: acctest.ComposeTestResourceConfig(`
 		resource "dsm_shared_folder" "test" {
@@ -56,6 +57,12 @@ func TestAccSharePermission_import(t *testing.T) {
 		  permission      = "read_only"
 		}
 		`),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("dsm_share_permission.test", "permission", "read_only"),
+				),
+			},
+			// Step 2: import and verify only the permission resource.
+			{
 				ResourceName:      "dsm_share_permission.test",
 				ImportState:       true,
 				ImportStateVerify: true,

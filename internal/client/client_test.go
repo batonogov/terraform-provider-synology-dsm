@@ -38,16 +38,16 @@ func TestClient_Login(t *testing.T) {
 		t.Fatalf("Login failed: %v", err)
 	}
 
-	if client.sessionID != sid {
-		t.Errorf("expected sessionID %q, got %q", sid, client.sessionID)
+	if gotSid, _ := client.session(); gotSid != sid {
+		t.Errorf("expected sessionID %q, got %q", sid, gotSid)
 	}
 
 	if err := client.Logout(context.Background()); err != nil {
 		t.Fatalf("Logout failed: %v", err)
 	}
 
-	if client.sessionID != "" {
-		t.Errorf("expected empty sessionID after logout, got %q", client.sessionID)
+	if gotSid, _ := client.session(); gotSid != "" {
+		t.Errorf("expected empty sessionID after logout, got %q", gotSid)
 	}
 }
 
@@ -79,7 +79,7 @@ func TestClient_DoAPI(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "admin", "password", false)
-	client.sessionID = "test-sid"
+	client.setSession("test-sid", "")
 
 	data, err := client.DoAPI(context.Background(), "SYNO.Core.User", "1", "list", nil)
 	if err != nil {
@@ -144,7 +144,7 @@ func TestClient_DoAPIPost(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "admin", "password", false)
-	client.sessionID = "test-sid"
+	client.setSession("test-sid", "")
 
 	params := url.Values{}
 	params.Set("name", "test-folder")

@@ -39,6 +39,7 @@ func TestAccSharedFolder_import(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
+			// Step 1: create the shared folder.
 			{
 				Config: acctest.ComposeTestResourceConfig(`
 resource "dsm_shared_folder" "test" {
@@ -46,6 +47,12 @@ resource "dsm_shared_folder" "test" {
   vol_path = "/volume1"
 }
 `),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("dsm_shared_folder.test", "name", "tfacctestfolderimp"),
+				),
+			},
+			// Step 2: import and verify.
+			{
 				ResourceName:      "dsm_shared_folder.test",
 				ImportState:       true,
 				ImportStateVerify: true,

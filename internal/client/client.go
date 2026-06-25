@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,12 +36,31 @@ func (e *APIError) Error() string {
 }
 
 type Client struct {
-	httpClient  *http.Client
-	baseURL     string
-	username    string
-	password    string
-	sessionID   string
-	synoToken   string
+	httpClient *http.Client
+	baseURL    string
+	username   string
+	password   string
+	// sessionID and synoToken are read on every API call (buildParams) and
+	// written on Login/re-login. sessMu (RWMutex) guards their access: readers
+	// take RLock (concurrent), writers take Lock. This prevents the data race
+	// where a concurrent re-login updates the session while another goroutine
+	// is reading it for a request.
+	sessionID string
+	synoToken string
+	sessMu    sync.RWMutex
+	// loginMu serializes concurrent re-login attempts: if several goroutines hit
+	// a 119 at once, only one Login is in flight at a time. Waiters still perform
+	// their own Login after acquiring the lock (each new SID is valid), so a 119
+	// storm results in up to N logins rather than 1; this trades a little extra
+	// auth traffic for simplicity. Distinct from sessMu so that holding loginMu
+	// during Login's network I/O does not block request param building.
+	loginMu sync.Mutex
+	// mu serializes read-modify-write sequences for APIs that DSM exposes as a
+	// whole-list "set" (share permissions, user quotas). Without it, Terraform's
+	// default parallelism (-parallelism=10) causes lost updates: each resource
+	// reads the full list, mutates one entry, and writes it back, so concurrent
+	// writers clobber each other. See SetSharePermission / SetUserQuota.
+	mu sync.Mutex
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {
@@ -85,9 +105,25 @@ func (c *Client) Login(ctx context.Context) error {
 		return fmt.Errorf("parse login response: %w", err)
 	}
 
-	c.sessionID = result.SID
-	c.synoToken = result.SynoToken
+	c.setSession(result.SID, result.SynoToken)
 	return nil
+}
+
+// setSession updates the stored session credentials under sessMu (write lock).
+func (c *Client) setSession(sid, token string) {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	c.sessionID = sid
+	c.synoToken = token
+}
+
+// session returns a snapshot of the current session credentials under sessMu
+// (read lock). Callers must not hold the returned values across a re-login if
+// they need a consistent pair with a single request — use them immediately.
+func (c *Client) session() (sid, token string) {
+	c.sessMu.RLock()
+	defer c.sessMu.RUnlock()
+	return c.sessionID, c.synoToken
 }
 
 func (c *Client) Logout(ctx context.Context) error {
@@ -97,7 +133,7 @@ func (c *Client) Logout(ctx context.Context) error {
 	params.Set("method", "logout")
 
 	_, err := c.doGetRequest(ctx, params)
-	c.sessionID = ""
+	c.setSession("", "")
 	return err
 }
 
@@ -127,11 +163,12 @@ func (c *Client) buildParams(api, version, method string, extraParams url.Values
 	params.Set("version", version)
 	params.Set("method", method)
 
-	if c.sessionID != "" {
-		params.Set("_sid", c.sessionID)
+	sid, token := c.session()
+	if sid != "" {
+		params.Set("_sid", sid)
 	}
-	if c.synoToken != "" {
-		params.Set("SynoToken", c.synoToken)
+	if token != "" {
+		params.Set("SynoToken", token)
 	}
 
 	for k, vs := range extraParams {
@@ -223,6 +260,16 @@ func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values, http
 		resp, err := c.executeRequest(ctx, params, httpMethod)
 		if err != nil {
 			lastErr = err
+			// Error 119 = "SID not found or invalid" (session expired). DSM
+			// sessions are short-lived; a long apply can outlive the SID.
+			// Re-login once and retry with a fresh session.
+			if isSessionExpiredError(err) {
+				if relErr := c.relogin(ctx); relErr != nil {
+					return nil, fmt.Errorf("re-login after expired session: %w (original: %v)", relErr, err)
+				}
+				params = c.refreshSessionParams(params)
+				continue
+			}
 			if isTransientError(err) {
 				continue
 			}
@@ -234,6 +281,34 @@ func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values, http
 	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
+// relogin serializes concurrent re-login attempts via loginMu (so only one
+// goroutine performs the network Login) and re-authenticates. It does NOT hold
+// loginMu across request param building: sessMu independently guards the
+// session fields, so other goroutines keep building requests with a consistent
+// (possibly stale) session snapshot during the re-login.
+func (c *Client) relogin(ctx context.Context) error {
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
+	return c.Login(ctx)
+}
+
+// refreshSessionParams rebuilds the auth params (_sid, SynoToken) after a
+// re-login, preserving all other query parameters.
+func (c *Client) refreshSessionParams(params url.Values) url.Values {
+	sid, token := c.session()
+	if sid != "" {
+		params.Set("_sid", sid)
+	} else {
+		params.Del("_sid")
+	}
+	if token != "" {
+		params.Set("SynoToken", token)
+	} else {
+		params.Del("SynoToken")
+	}
+	return params
+}
+
 func isTransientError(err error) bool {
 	if err == nil {
 		return false
@@ -243,6 +318,17 @@ func isTransientError(err error) bool {
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "temporary") ||
 		strings.Contains(msg, "EOF")
+}
+
+// isSessionExpiredError detects DSM API error 119 ("SID not found or invalid"),
+// which signals that the session has expired and a re-login is required.
+// The trailing ":" avoids false-positives on unrelated codes like 1190, 1191,
+// ... which would otherwise contain the substring "api error 119".
+func isSessionExpiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "api error 119:")
 }
 
 func boolParam(v bool) string {

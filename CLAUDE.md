@@ -123,18 +123,20 @@ task test-env-status  # Check status
 - Login with empty password (`admin`/`""`)
 - No shared folders by default — tests must create them
 - No `homes` share — don't reference it in tests
-- User quota API returns error 102 — not supported on virtual DSM
+- User quota API returns error 102 — not supported on virtual DSM. The three `dsm_user_quota` acceptance tests skip unless `DSM_ACC_QUOTA=1` is set; run them against real hardware with that env var enabled.
+- Sessions are short-lived; the client re-authenticates automatically on error 119
 
 **Acceptance tests** (`*_acc_test.go` in repo root):
 - `TestAccPreCheck` validates env vars (`TF_ACC`, `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`)
+- `TestAccPreCheckQuota` additionally requires `DSM_ACC_QUOTA=1` (gates the quota tests; `SYNO.Core.Share.Quota` is error 102 on virtual DSM)
 - `SYNOLOGY_DSM_PASSWORD` can be empty (supports DSM first-login state)
 - Tests use `internal/acctest` package — `ComposeTestResourceConfig()` wraps config with provider block
-- Each resource has: basic create, import, and data source tests
+- Each resource has: basic create, import (two-step: create then import), and data source tests
 - Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency
 
-**Current acc-test status (5/14 PASS):**
-- PASS: `TestAccGroup_basic`, `TestAccDataSourceGroup_basic`, `TestAccSharedFolder_basic`, `TestAccUser_basic`, `TestAccDataSourceUser_basic`
-- FAIL: import tests (need two-step config), user_quota (error 102 on virtual DSM), share_permission (depends on shared folder state)
+**Current acc-test status (11 PASS / 0 FAIL / 3 SKIP):**
+- PASS: all `*_basic` and `*_import` tests for group, user, shared_folder, share_permission (two-step create→import), plus the data source tests
+- SKIP: `TestAccUserQuota_basic`, `TestAccUserQuota_import`, `TestAccDataSourceUserQuota_basic` — gated behind `DSM_ACC_QUOTA=1`; `SYNO.Core.Share.Quota` is error 102 on virtual DSM, works on real hardware
 
 **Run acceptance tests:**
 ```bash
@@ -146,10 +148,10 @@ TF_ACC=1 go test -v -timeout 30m ./...
 
 ## Known Issues
 
-- **Import tests fail** — `Resource specified by ResourceName couldn't be found`. Import tests need a two-step approach: first create the resource, then import it in a separate step.
-- **User quota API not supported on virtual DSM** — `SYNO.Core.Share.UserQuota` returns error 102. Tests should skip on virtual DSM or use `t.Skip` with a note.
 - **Test state pollution** — acc tests don't clean up created resources between runs, causing "already exists" (3301) errors on shared folders. Consider adding unique suffixes or explicit cleanup.
-- **Short SID lifetime on virtual DSM** — sessions expire quickly. Tests that make many API calls may hit error 119.
+- **`dsm_user.password` blocks clean import** — `password` is `Required` + `Sensitive` and DSM never returns it, so `terraform import` of `dsm_user` leaves a non-empty plan until `password` is added to the config. A `WriteOnly`/`Optional+Computed` treatment is a future option.
+- **Explicit `""` on optional strings** — `nullableString` normalizes empty descriptions/emails to null on Read (fixing the omitted-attribute drift). Setting `description = ""` explicitly still produces a perpetual diff because DSM cannot represent an intentional empty string; see `internal/provider/helpers.go`.
+- **Quota untested on hardware** — the quota resource only validates on a real NAS (`DSM_ACC_QUOTA=1`); it is skipped on the virtual DSM.
 
 ## Roadmap
 
