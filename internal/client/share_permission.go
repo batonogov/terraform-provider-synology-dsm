@@ -71,8 +71,10 @@ func (c *Client) GetSharePermission(ctx context.Context, shareName, userGroupTyp
 }
 
 func (c *Client) SetSharePermission(ctx context.Context, req SetSharePermissionRequest) (*SharePermission, error) {
+	c.mu.Lock()
 	perms, err := c.ListSharePermissions(ctx, req.ShareName, req.UserGroupType)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 
@@ -80,6 +82,7 @@ func (c *Client) SetSharePermission(ctx context.Context, req SetSharePermissionR
 	for i := range perms {
 		if perms[i].Name == req.PrincipalName {
 			if err := applyPermissionMap(&perms[i], req.Permission); err != nil {
+				c.mu.Unlock()
 				return nil, err
 			}
 			found = true
@@ -89,19 +92,25 @@ func (c *Client) SetSharePermission(ctx context.Context, req SetSharePermissionR
 	if !found {
 		p := SharePermission{Name: req.PrincipalName}
 		if err := applyPermissionMap(&p, req.Permission); err != nil {
+			c.mu.Unlock()
 			return nil, err
 		}
 		perms = append(perms, p)
 	}
 
 	if err := c.setAllPermissions(ctx, req.ShareName, req.UserGroupType, perms); err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("set share permission for %q on %q: %w", req.PrincipalName, req.ShareName, err)
 	}
+	c.mu.Unlock()
 
 	return c.GetSharePermission(ctx, req.ShareName, req.UserGroupType, req.PrincipalName)
 }
 
 func (c *Client) DeleteSharePermission(ctx context.Context, shareName, userGroupType, principalName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	perms, err := c.ListSharePermissions(ctx, shareName, userGroupType)
 	if err != nil {
 		return err

@@ -66,8 +66,10 @@ func (c *Client) GetUserQuota(ctx context.Context, shareName, username string) (
 }
 
 func (c *Client) SetUserQuota(ctx context.Context, req SetUserQuotaRequest) (*UserQuota, error) {
+	c.mu.Lock()
 	quotas, err := c.ListUserQuotas(ctx, req.ShareName)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 
@@ -87,13 +89,18 @@ func (c *Client) SetUserQuota(ctx context.Context, req SetUserQuotaRequest) (*Us
 	}
 
 	if err := c.setAllQuotas(ctx, req.ShareName, quotas); err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("set quota for %q on %q: %w", req.Username, req.ShareName, err)
 	}
+	c.mu.Unlock()
 
 	return c.GetUserQuota(ctx, req.ShareName, req.Username)
 }
 
 func (c *Client) DeleteUserQuota(ctx context.Context, shareName, username string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	quotas, err := c.ListUserQuotas(ctx, shareName)
 	if err != nil {
 		return err
