@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -59,6 +60,9 @@ func (r *groupResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"gid": schema.Int64Attribute{
 				Computed:    true,
 				Description: "Group ID assigned by DSM.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -137,7 +141,7 @@ func (r *groupResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 	state.ID = types.StringValue(group.Name)
 	state.Name = types.StringValue(group.Name)
-	state.Description = types.StringValue(group.Description)
+	state.Description = nullableString(group.Description)
 	state.GID = types.Int64Value(int64(group.GID))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)

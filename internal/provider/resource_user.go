@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -84,6 +85,9 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"uid": schema.Int64Attribute{
 				Computed:    true,
 				Description: "User ID assigned by DSM.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -154,11 +158,16 @@ func (r *userResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
+	name := state.ID.ValueString()
+	if name == "" {
+		name = state.Name.ValueString()
+	}
+
 	tflog.Debug(ctx, "Reading DSM user", map[string]interface{}{
-		"name": state.Name.ValueString(),
+		"name": name,
 	})
 
-	user, err := r.client.GetUser(ctx, state.Name.ValueString())
+	user, err := r.client.GetUser(ctx, name)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to read user",
@@ -167,8 +176,10 @@ func (r *userResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	state.Description = types.StringValue(user.Description)
-	state.Email = types.StringValue(user.Email)
+	state.ID = types.StringValue(user.Name)
+	state.Name = types.StringValue(user.Name)
+	state.Description = nullableString(user.Description)
+	state.Email = nullableString(user.Email)
 	state.Disabled = types.BoolValue(user.Disabled)
 	state.UID = types.Int64Value(int64(user.UID))
 

@@ -82,6 +82,9 @@ func (r *sharedFolderResource) Schema(_ context.Context, _ resource.SchemaReques
 			"uuid": schema.StringAttribute{
 				Computed:    true,
 				Description: "UUID assigned by DSM.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -163,7 +166,7 @@ func (r *sharedFolderResource) Read(ctx context.Context, req resource.ReadReques
 
 	state.ID = types.StringValue(share.Name)
 	state.Name = types.StringValue(share.Name)
-	state.Description = types.StringValue(share.Description)
+	state.Description = nullableString(share.Description)
 	state.VolPath = types.StringValue(share.VolPath)
 	state.Hidden = types.BoolValue(share.Hidden)
 	state.EnableRecycleBin = types.BoolValue(share.EnableRecycleBin)
