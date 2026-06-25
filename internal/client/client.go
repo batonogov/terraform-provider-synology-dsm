@@ -322,11 +322,13 @@ func isTransientError(err error) bool {
 
 // isSessionExpiredError detects DSM API error 119 ("SID not found or invalid"),
 // which signals that the session has expired and a re-login is required.
+// The trailing ":" avoids false-positives on unrelated codes like 1190, 1191,
+// ... which would otherwise contain the substring "api error 119".
 func isSessionExpiredError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "api error 119")
+	return strings.Contains(err.Error(), "api error 119:")
 }
 
 func boolParam(v bool) string {

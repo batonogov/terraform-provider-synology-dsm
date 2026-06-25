@@ -25,3 +25,6 @@ vendor/
 # Test
 testacc/.terraform/
 testacc/*.tfstate*
+
+# Pi agent artifacts (local analysis, logs, scratch notes)
+.pi/

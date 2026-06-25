@@ -313,10 +313,110 @@ func TestClient_SetUserQuota_Concurrent(t *testing.T) {
 	}
 }
 
-// TestClient_ConcurrentRelogin hammers the client from many goroutines while the
-// server returns 119 on the first real call then succeeds. This exercises the
-// loginMu/sessMu interaction under contention and would fail under -race if any
-// re-login path reintroduced a bare (unlocked) write to sessionID/synoToken.
+// TestClient_DeleteSharePermission_Concurrent verifies the Delete path is also
+// serialized by c.mu. Delete uses the same list -> filter -> set-all RMW as Set,
+// so a missing lock would let concurrent deletes clobber each other and leave
+// principals that should have been removed. We first seed n principals, then
+// delete all of them in parallel, and assert none survive.
+func TestClient_DeleteSharePermission_Concurrent(t *testing.T) {
+	client, server := setupSharePermissionTestServer()
+	defer server.Close()
+
+	// Seed n principals on a clean slate.
+	for i := 0; i < 50; i++ {
+		_, err := client.SetSharePermission(context.Background(), SetSharePermissionRequest{
+			ShareName:     "data",
+			UserGroupType: "local_user",
+			PrincipalName: fmt.Sprintf("del-%d", i),
+			Permission:    "read_write",
+		})
+		if err != nil {
+			t.Fatalf("seed SetSharePermission(%d): %v", i, err)
+		}
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = client.DeleteSharePermission(context.Background(), "data", "local_user", fmt.Sprintf("del-%d", i))
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	perms, err := client.ListSharePermissions(context.Background(), "data", "local_user")
+	if err != nil {
+		t.Fatalf("ListSharePermissions: %v", err)
+	}
+	for _, p := range perms {
+		if strings.HasPrefix(p.Name, "del-") {
+			t.Errorf("principal %q survived concurrent delete (have %d remaining)", p.Name, len(perms))
+		}
+	}
+}
+
+// TestClient_DeleteUserQuota_Concurrent mirrors the above for quotas.
+func TestClient_DeleteUserQuota_Concurrent(t *testing.T) {
+	client, server := setupUserQuotaTestServer()
+	defer server.Close()
+
+	for i := 0; i < 50; i++ {
+		_, err := client.SetUserQuota(context.Background(), SetUserQuotaRequest{
+			ShareName: "data",
+			Username:  fmt.Sprintf("del-%d", i),
+			QuotaSize: int64(i+1) * 1024,
+		})
+		if err != nil {
+			t.Fatalf("seed SetUserQuota(%d): %v", i, err)
+		}
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = client.DeleteUserQuota(context.Background(), "data", fmt.Sprintf("del-%d", i))
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	quotas, err := client.ListUserQuotas(context.Background(), "data")
+	if err != nil {
+		t.Fatalf("ListUserQuotas: %v", err)
+	}
+	for _, q := range quotas {
+		if !strings.HasPrefix(q.Username, "del-") {
+			continue
+		}
+		// DSM quota delete semantics = reset QuotaSize to 0 (unlimited), not removal
+		// of the principal from the list (unlike share permissions). Assert the reset.
+		if q.QuotaSize != 0 {
+			t.Errorf("quota for %q not reset to 0 after concurrent delete: size=%d (have %d remaining)",
+				q.Username, q.QuotaSize, len(quotas))
+		}
+	}
+}
+
+// TestClient_ConcurrentRelogin exercises the session-locking discipline under
+// contention. Many goroutines build requests (reading sessionID/synoToken via
+// sessMu.RLock in buildParams) while exactly one of them triggers a re-login
+// (writing those fields via sessMu.Lock in setSession). Under -race this catches
+// any regression that reintroduces a bare read/write of the session fields on
+// the re-login path. It is NOT a stress test of loginMu's multi-waiter path
+// (only one goroutine 119s here); SetSharePermission/SetUserQuota_Concurrent
+// cover the mu RMW path separately.
 func TestClient_ConcurrentRelogin(t *testing.T) {
 	mux := http.NewServeMux()
 	var logins atomic.Int64
@@ -372,12 +472,11 @@ func TestClient_ConcurrentRelogin(t *testing.T) {
 	for err := range errs {
 		t.Errorf("concurrent DoAPI failed: %v", err)
 	}
-	// loginMu guarantees logins are serialized (no two in flight), but every
-	// waiter still logs in, so we expect multiple logins. The key assertion is
-	// -race cleanliness (no concurrent read/write of session fields), which the
-	// test runner enforces when invoked with -race.
-	if got := logins.Load(); got < 2 {
-		t.Errorf("expected at least one re-login under contention, got %d total logins", got)
+	// Exactly one goroutine receives a 119 and one re-login follows, so total
+	// logins == 2. The meaningful check is -race cleanliness (20 concurrent
+	// readers of the session fields racing the one writer during re-login).
+	if got := logins.Load(); got != 2 {
+		t.Errorf("expected exactly 2 logins (1 initial + 1 re-login), got %d", got)
 	}
 }
 
@@ -388,8 +487,12 @@ func TestIsSessionExpiredError(t *testing.T) {
 		want bool
 	}{
 		{"api error 119: synology api error: code 119", true},
-		{"api error 119", true},
 		{"api error 102: synology api error: code 102", false},
+		// Regression: codes 1190, 1191, 11900 contain "api error 119" as a substring
+		// but must NOT be treated as session-expired (they would trigger a bogus re-login).
+		{"api error 1190: synology api error: code 1190", false},
+		{"api error 1191: synology api error: code 1191", false},
+		{"api error 11900: synology api error: code 11900", false},
 		{"http request: connection refused", false},
 		{"", false},
 	}
