@@ -290,7 +290,7 @@ func TestClient_SetUserQuota_Concurrent(t *testing.T) {
 			_, _ = client.SetUserQuota(context.Background(), SetUserQuotaRequest{
 				ShareName: "data",
 				Username:  fmt.Sprintf("user-%d", i),
-				QuotaSize: int64(i + 1) * 1024,
+				QuotaSize: int64(i+1) * 1024,
 			})
 		}()
 	}
