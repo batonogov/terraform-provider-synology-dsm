@@ -259,8 +259,9 @@ TF_ACC=1 go test -v -timeout 30m ./...
 **Virtual DSM specifics:**
 
 - Login with an empty password (`admin` / `""`) while in first-login state.
-- The user quota API returns error 102 — not supported on virtual DSM. Quota
-  acceptance tests are expected to fail there and should be run against real hardware.
+- The user quota API returns error 102 — not supported on virtual DSM. The
+  three `dsm_user_quota` acceptance tests are skipped unless `DSM_ACC_QUOTA=1`
+  is set; run them against real hardware with that env var enabled.
 - Sessions are short-lived; the provider re-authenticates on error 119 automatically.
 
 ### Release flow

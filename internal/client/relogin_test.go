@@ -313,6 +313,74 @@ func TestClient_SetUserQuota_Concurrent(t *testing.T) {
 	}
 }
 
+// TestClient_ConcurrentRelogin hammers the client from many goroutines while the
+// server returns 119 on the first real call then succeeds. This exercises the
+// loginMu/sessMu interaction under contention and would fail under -race if any
+// re-login path reintroduced a bare (unlocked) write to sessionID/synoToken.
+func TestClient_ConcurrentRelogin(t *testing.T) {
+	mux := http.NewServeMux()
+	var logins atomic.Int64
+	var firstReal atomic.Bool
+	firstReal.Store(true)
+	mux.HandleFunc("/webapi/entry.cgi", func(w http.ResponseWriter, r *http.Request) {
+		api := r.URL.Query().Get("api")
+		method := r.URL.Query().Get("method")
+		switch {
+		case api == "SYNO.API.Auth" && method == "login":
+			n := logins.Add(1)
+			json.NewEncoder(w).Encode(APIResponse{
+				Success: true,
+				Data:    json.RawMessage(fmt.Sprintf(`{"sid":"c-sid-%d","synotoken":"c-tok-%d"}`, n, n)),
+			})
+		case api == "SYNO.Core.User" && method == "list":
+			// First real call 119s (triggers re-login across goroutines); later calls succeed.
+			if firstReal.CompareAndSwap(true, false) {
+				json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: 119}})
+				return
+			}
+			data := `{"users":[{"name":"admin","uid":1024}],"total":1}`
+			json.NewEncoder(w).Encode(APIResponse{Success: true, Data: json.RawMessage(data)})
+		default:
+			json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: 101}})
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewClient(server.URL, "admin", "password", false)
+	if err := c.Login(context.Background()); err != nil {
+		t.Fatalf("initial login: %v", err)
+	}
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := c.DoAPI(context.Background(), "SYNO.Core.User", "1", "list", nil); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent DoAPI failed: %v", err)
+	}
+	// loginMu guarantees logins are serialized (no two in flight), but every
+	// waiter still logs in, so we expect multiple logins. The key assertion is
+	// -race cleanliness (no concurrent read/write of session fields), which the
+	// test runner enforces when invoked with -race.
+	if got := logins.Load(); got < 2 {
+		t.Errorf("expected at least one re-login under contention, got %d total logins", got)
+	}
+}
+
 // TestIsSessionExpiredError covers the string-based 119 detection.
 func TestIsSessionExpiredError(t *testing.T) {
 	cases := []struct {

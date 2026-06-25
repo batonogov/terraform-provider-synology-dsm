@@ -48,11 +48,12 @@ type Client struct {
 	sessionID string
 	synoToken string
 	sessMu    sync.RWMutex
-	// loginMu serializes concurrent re-login attempts: if two goroutines hit a
-	// 119 at once, only one performs the (slow, network) Login; the other
-	// waits and then reuses the freshly obtained session. Distinct from sessMu
-	// so that holding it during Login's network I/O does not block request
-	// param building.
+	// loginMu serializes concurrent re-login attempts: if several goroutines hit
+	// a 119 at once, only one Login is in flight at a time. Waiters still perform
+	// their own Login after acquiring the lock (each new SID is valid), so a 119
+	// storm results in up to N logins rather than 1; this trades a little extra
+	// auth traffic for simplicity. Distinct from sessMu so that holding loginMu
+	// during Login's network I/O does not block request param building.
 	loginMu sync.Mutex
 	// mu serializes read-modify-write sequences for APIs that DSM exposes as a
 	// whole-list "set" (share permissions, user quotas). Without it, Terraform's
