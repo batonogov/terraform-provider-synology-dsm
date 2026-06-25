@@ -8,7 +8,7 @@ import (
 )
 
 func TestAccUserQuota_basic(t *testing.T) {
-	acctest.TestAccPreCheck(t)
+	acctest.TestAccPreCheckQuota(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
@@ -38,10 +38,11 @@ func TestAccUserQuota_basic(t *testing.T) {
 }
 
 func TestAccUserQuota_import(t *testing.T) {
-	acctest.TestAccPreCheck(t)
+	acctest.TestAccPreCheckQuota(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
+			// Step 1: create shared folder + quota.
 			{
 				Config: acctest.ComposeTestResourceConfig(`
 		resource "dsm_shared_folder" "test" {
@@ -55,6 +56,12 @@ func TestAccUserQuota_import(t *testing.T) {
 		  quota_size = 0
 		}
 		`),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet("dsm_user_quota.test", "id"),
+				),
+			},
+			// Step 2: import and verify.
+			{
 				ResourceName:      "dsm_user_quota.test",
 				ImportState:       true,
 				ImportStateVerify: true,
@@ -64,7 +71,7 @@ func TestAccUserQuota_import(t *testing.T) {
 }
 
 func TestAccDataSourceUserQuota_basic(t *testing.T) {
-	acctest.TestAccPreCheck(t)
+	acctest.TestAccPreCheckQuota(t)
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{

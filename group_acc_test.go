@@ -37,6 +37,7 @@ func TestAccGroup_import(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
+			// Step 1: create the resource so it exists in DSM and is recorded in state.
 			{
 				Config: acctest.ComposeTestResourceConfig(`
 resource "dsm_group" "test" {
@@ -44,6 +45,12 @@ resource "dsm_group" "test" {
   description = "Import test group"
 }
 `),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("dsm_group.test", "name", "tf-acc-test-group-imp"),
+				),
+			},
+			// Step 2: import the existing resource and verify it matches state.
+			{
 				ResourceName:      "dsm_group.test",
 				ImportState:       true,
 				ImportStateVerify: true,

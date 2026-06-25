@@ -40,6 +40,7 @@ func TestAccUser_import(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
 		Steps: []resource.TestStep{
+			// Step 1: create the user so it exists and is in state.
 			{
 				Config: acctest.ComposeTestResourceConfig(`
 resource "dsm_user" "test" {
@@ -47,6 +48,13 @@ resource "dsm_user" "test" {
   password = "TestPass123!"
 }
 `),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("dsm_user.test", "name", "tfacctestuserimp"),
+				),
+			},
+			// Step 2: import and verify. password is write-only / not returned by
+			// DSM, so it must be excluded from the import verification.
+			{
 				ResourceName:            "dsm_user.test",
 				ImportState:             true,
 				ImportStateVerify:       true,

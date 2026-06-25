@@ -26,6 +26,17 @@ func TestAccPreCheck(t *testing.T) {
 	}
 }
 
+// TestAccPreCheckQuota gates the user-quota acceptance tests. The
+// SYNO.Core.Share.Quota API returns error 102 ("not supported") on the
+// virtual DSM (vdsm/virtual-dsm) used for local testing; it only works on real
+// Synology hardware. Set DSM_ACC_QUOTA=1 to opt in (e.g. against a physical NAS).
+func TestAccPreCheckQuota(t *testing.T) {
+	TestAccPreCheck(t)
+	if os.Getenv("DSM_ACC_QUOTA") != "1" {
+		t.Skip("skipping user quota test: SYNO.Core.Share.Quota is not available on virtual DSM; set DSM_ACC_QUOTA=1 against real hardware")
+	}
+}
+
 func TestAccProviderFactories() map[string]func() (tfprotov6.ProviderServer, error) {
 	return map[string]func() (tfprotov6.ProviderServer, error){
 		"dsm": func() (tfprotov6.ProviderServer, error) {
