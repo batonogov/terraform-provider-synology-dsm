@@ -201,8 +201,15 @@ func parseUser(raw json.RawMessage) (*User, error) {
 	}
 	if groups, ok := m["groups"].([]interface{}); ok {
 		for _, g := range groups {
+			// DSM may return groups either as a plain string name or as an
+			// object {"name": "...", ...}. Handle both to avoid silently
+			// dropping group membership on refresh.
 			if s, ok := g.(string); ok {
 				u.Groups = append(u.Groups, s)
+			} else if obj, ok := g.(map[string]interface{}); ok {
+				if name, ok := obj["name"].(string); ok && name != "" {
+					u.Groups = append(u.Groups, name)
+				}
 			}
 		}
 	}

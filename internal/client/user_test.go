@@ -147,3 +147,71 @@ func TestClient_DeleteUser(t *testing.T) {
 		t.Fatalf("DeleteUser failed: %v", err)
 	}
 }
+
+// TestParseUser_GroupsAsObjects verifies that parseUser accepts the real DSM
+// 7.2/7.3 format where "groups" is an array of objects {name, ...} rather
+// than an array of plain strings. Previously only strings were handled, which
+// silently dropped all group membership on refresh (issue M5).
+func TestParseUser_GroupsAsObjects(t *testing.T) {
+	raw := json.RawMessage(`{
+		"name": "john",
+		"uid": 1025,
+		"description": "John Doe",
+		"groups": [
+			{"name": "administrators", "inherited": false},
+			{"name": "users", "inherited": true}
+		]
+	}`)
+	u, err := parseUser(raw)
+	if err != nil {
+		t.Fatalf("parseUser: %v", err)
+	}
+	want := []string{"administrators", "users"}
+	if len(u.Groups) != len(want) {
+		t.Fatalf("expected %d groups, got %d: %v", len(want), len(u.Groups), u.Groups)
+	}
+	for i, g := range want {
+		if u.Groups[i] != g {
+			t.Errorf("group[%d] = %q, want %q", i, u.Groups[i], g)
+		}
+	}
+}
+
+// TestParseUser_GroupsMixed verifies both string and object entries are parsed.
+func TestParseUser_GroupsMixed(t *testing.T) {
+	raw := json.RawMessage(`{
+		"name": "jane",
+		"groups": ["string-group", {"name": "object-group"}]
+	}`)
+	u, err := parseUser(raw)
+	if err != nil {
+		t.Fatalf("parseUser: %v", err)
+	}
+	if len(u.Groups) != 2 {
+		t.Fatalf("expected 2 groups (mixed), got %d: %v", len(u.Groups), u.Groups)
+	}
+}
+
+// TestParseUser_GroupsEmpty verifies empty array does not error and yields no groups.
+func TestParseUser_GroupsEmpty(t *testing.T) {
+	raw := json.RawMessage(`{"name":"bob","groups":[]}`)
+	u, err := parseUser(raw)
+	if err != nil {
+		t.Fatalf("parseUser: %v", err)
+	}
+	if len(u.Groups) != 0 {
+		t.Errorf("expected 0 groups, got %d", len(u.Groups))
+	}
+}
+
+// TestParseUser_ObjectWithoutName verifies a group object missing "name" is skipped, not panic.
+func TestParseUser_GroupsWithoutName(t *testing.T) {
+	raw := json.RawMessage(`{"name":"bob","groups":[{"gid":100}]}`)
+	u, err := parseUser(raw)
+	if err != nil {
+		t.Fatalf("parseUser: %v", err)
+	}
+	if len(u.Groups) != 0 {
+		t.Errorf("expected 0 groups when none have name, got %d", len(u.Groups))
+	}
+}
