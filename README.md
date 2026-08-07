@@ -160,19 +160,51 @@ terraform import dsm_group.developers developers
 
 Manages a shared folder.
 
-| Attribute            | Type   | Required | Computed | Description                                          |
-|----------------------|--------|----------|----------|------------------------------------------------------|
-| `id`                 | string | -        | yes      | Identifier (name)                                    |
-| `name`               | string | yes      | -        | Shared folder name. Forces replacement if changed.   |
-| `vol_path`           | string | yes      | -        | Volume path (e.g. `/volume1`). Forces replacement.   |
-| `description`        | string | no       | -        | Description                                          |
-| `hidden`             | bool   | no       | yes      | Hide from network browsing (default: `false`)        |
-| `enable_recycle_bin` | bool   | no       | yes      | Enable recycle bin (default: `true`)                 |
-| `uuid`               | string | -        | yes      | UUID assigned by DSM (read-only)                     |
+| Attribute                | Type   | Required | Computed | Description                                          |
+|--------------------------|--------|----------|----------|------------------------------------------------------|
+| `id`                     | string | -        | yes      | Identifier (name)                                    |
+| `name`                   | string | yes      | -        | Shared folder name. Forces replacement if changed.   |
+| `vol_path`               | string | yes      | -        | Volume path (e.g. `/volume1`). Forces replacement.   |
+| `description`            | string | no       | -        | Description                                          |
+| `hidden`                 | bool   | no       | yes      | Hide from network browsing (default: `false`)        |
+| `enable_recycle_bin`     | bool   | no       | yes      | Enable recycle bin (default: `true`)                 |
+| `recycle_bin_admin_only` | bool   | no       | yes      | Restrict recycle bin to administrators (default: `true`) |
+| `enable_share_compress`  | bool   | no       | yes      | File compression, Btrfs (default: `false`). See caveats below. |
+| `enable_share_cow`       | bool   | no       | yes      | Data checksum for advanced data integrity / copy-on-write, Btrfs (default: `false`) |
+| `share_quota`            | int    | no       | yes      | Quota for the whole folder **in gigabytes**; `0` is unlimited (default: `0`) |
+| `uuid`                   | string | -        | yes      | UUID assigned by DSM (read-only)                     |
+
+```hcl
+resource "dsm_shared_folder" "archive" {
+  name                   = "archive"
+  vol_path               = "/volume1"
+  description            = "Compressed archive with a 500 GB cap"
+  enable_recycle_bin     = true
+  recycle_bin_admin_only = true
+  enable_share_compress  = true
+  enable_share_cow       = true
+  share_quota            = 500
+}
+```
 
 ```bash
 terraform import dsm_shared_folder.team_data team-data
 ```
+
+> **Compression requires copy-on-write.** DSM refuses to create a compressed
+> folder unless `enable_share_cow` is also `true`; the provider rejects that
+> combination at plan time.
+
+> **`enable_share_compress` and `enable_share_cow` are creation-time only.**
+> DSM accepts them when the folder is created and silently ignores them
+> afterwards — a `set` call reports success while the value stays `false`.
+> Switching either from `false` to `true` therefore forces replacement, **which
+> destroys the folder and everything in it**. Turning them off is applied in
+> place. Plan output will show the replacement; check it before applying.
+
+> **`share_quota` is in gigabytes**, not bytes — unlike `dsm_user_quota.quota_size`.
+> That matches DSM's own API, which takes `share_quota` and reports it back as
+> `quota_value`.
 
 ### `dsm_share_permission`
 
@@ -269,7 +301,7 @@ attributes as input and returns the remaining computed attributes:
 |--------------------------|----------------------------------------------------|-----------------------------------------------------|
 | `dsm_user`               | `name`                                             | `id`, `description`, `email`, `disabled`, `groups`, `uid` |
 | `dsm_group`              | `name`                                             | `id`, `description`, `gid`                          |
-| `dsm_shared_folder`      | `name`                                             | `id`, `description`, `vol_path`, `uuid`             |
+| `dsm_shared_folder`      | `name`                                             | `id`, `description`, `vol_path`, `hidden`, `enable_recycle_bin`, `recycle_bin_admin_only`, `enable_share_compress`, `enable_share_cow`, `share_quota`, `uuid` |
 | `dsm_share_permission`   | `share_name`, `user_group_type`, `principal_name`  | `id`, `permission`                                  |
 | `dsm_user_quota`         | `share_name`, `username`                           | `id`, `quota_size`, `quota_used`                    |
 | `dsm_user_home_service`  | — (singleton)                                      | `id`, `enable`, `location`, `enable_recycle_bin`, `enable_domain`, `enable_ldap`, `encryption`, `personal_photo_enable` |

@@ -42,6 +42,22 @@ resource "dsm_user_quota" "example_home" {
   depends_on = [dsm_user_home_service.homes]
 }
 
+# A team folder with compression and a 500 GB cap.
+#
+# Compression requires enable_share_cow, and both are creation-time only in DSM:
+# switching either from false to true forces replacement, which destroys the
+# folder and its contents. share_quota is in GIGABYTES.
+resource "dsm_shared_folder" "archive" {
+  name                   = "archive"
+  vol_path               = "/volume1"
+  description            = "Compressed team archive"
+  enable_recycle_bin     = true
+  recycle_bin_admin_only = true
+  enable_share_compress  = true
+  enable_share_cow       = true
+  share_quota            = 500
+}
+
 variable "dsm_password" {
   description = "DSM administrator password"
   type        = string
