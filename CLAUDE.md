@@ -137,8 +137,9 @@ task test-env-status  # Check status
 - Each resource has: basic create, import (two-step: create then import), and data source tests
 - Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency
 
-**Current acc-test status (11 PASS / 0 FAIL / 3 SKIP):**
+**Current acc-test status (19 PASS / 0 FAIL / 3 SKIP), verified 2026-08-07:**
 - PASS: all `*_basic` and `*_import` tests for group, user, shared_folder, share_permission (two-step create→import), plus the data source tests
+- PASS: the eight `dsm_user_home_service` tests — create, recycle-bin update, import, the `homes` share side effect, both destroy modes (`disable_on_destroy` on and off), the bad-location diagnostic, and the data source
 - SKIP: `TestAccUserQuota_basic`, `TestAccUserQuota_import`, `TestAccDataSourceUserQuota_basic` — gated behind `DSM_ACC_QUOTA=1`; `SYNO.Core.Share.Quota` is error 102 on virtual DSM, works on real hardware
 
 **Run acceptance tests:**
