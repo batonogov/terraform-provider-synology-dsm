@@ -25,6 +25,8 @@ type userDataSourceModel struct {
 	Description types.String `tfsdk:"description"`
 	Email       types.String `tfsdk:"email"`
 	Disabled    types.Bool   `tfsdk:"disabled"`
+	ExpireDate  types.String `tfsdk:"expire_date"`
+	TwoFactor   types.Bool   `tfsdk:"two_factor_enabled"`
 	Groups      types.List   `tfsdk:"groups"`
 	UID         types.Int64  `tfsdk:"uid"`
 }
@@ -53,6 +55,14 @@ func (d *userDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, r
 			"email": schema.StringAttribute{
 				Computed:    true,
 				Description: "Email address for the user.",
+			},
+			"expire_date": schema.StringAttribute{
+				Computed:    true,
+				Description: "Date the account expires as YYYY-MM-DD, or null if it never expires.",
+			},
+			"two_factor_enabled": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether two-factor authentication is enabled for this account.",
 			},
 			"disabled": schema.BoolAttribute{
 				Computed:    true,
@@ -112,6 +122,8 @@ func (d *userDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	config.Description = types.StringValue(user.Description)
 	config.Email = types.StringValue(user.Email)
 	config.Disabled = types.BoolValue(user.Disabled)
+	config.ExpireDate = nullableString(user.ExpireDate)
+	config.TwoFactor = types.BoolValue(user.TwoFactor)
 	config.UID = types.Int64Value(int64(user.UID))
 
 	if len(user.Groups) > 0 {

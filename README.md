@@ -128,18 +128,36 @@ Manages a local user account.
 
 | Attribute     | Type         | Required | Computed | Description                                  |
 |---------------|--------------|----------|----------|----------------------------------------------|
-| `id`          | string       | -        | yes      | Identifier (username)                        |
-| `name`        | string       | yes      | -        | Username. Forces replacement if changed.     |
-| `password`    | string       | yes      | -        | Password (sensitive). Cannot be imported.    |
-| `description` | string       | no       | -        | Description                                  |
-| `email`       | string       | no       | -        | Email address                                |
-| `disabled`    | bool         | no       | yes      | Account disabled (default: `false`)          |
-| `groups`      | list(string) | no       | -        | Group memberships                            |
-| `uid`         | int          | -        | yes      | UID assigned by DSM (read-only)              |
+| `id`                 | string       | -        | yes      | Identifier (username)                        |
+| `name`               | string       | yes      | -        | Username. Forces replacement if changed.     |
+| `password`           | string       | no*      | -        | Password (sensitive). *Required when creating; may be omitted for an imported user. |
+| `description`        | string       | no       | -        | Description                                  |
+| `email`              | string       | no       | -        | Email address                                |
+| `disabled`           | bool         | no       | yes      | Account disabled (default: `false`). Mutually exclusive with `expire_date`. |
+| `expire_date`        | string       | no       | -        | Account expiry as `YYYY-MM-DD`. Omit for an account that never expires. |
+| `groups`             | list(string) | no       | -        | Group memberships                            |
+| `two_factor_enabled` | bool         | -        | yes      | Whether 2FA is on (read-only)                |
+| `uid`                | int          | -        | yes      | UID assigned by DSM (read-only)              |
+
+```hcl
+resource "dsm_user" "contractor" {
+  name        = "jane.contractor"
+  password    = var.contractor_password
+  description = "Contractor — access until the end of the project"
+  expire_date = "2027-03-05"
+}
+```
 
 ```bash
 terraform import dsm_user.john john.doe
 ```
+
+> **`disabled` and `expire_date` are mutually exclusive.** DSM keeps the account
+> state in a single field, so an account cannot be both switched off and carry
+> an expiry date. The provider rejects that combination at plan time.
+
+> **2FA is read-only here.** DSM manages two-factor authentication through a
+> separate API (`SYNO.Core.OTP`), not through user attributes.
 
 ### `dsm_group`
 
@@ -299,7 +317,7 @@ attributes as input and returns the remaining computed attributes:
 
 | Data source              | Input (required)                                   | Output (computed)                                   |
 |--------------------------|----------------------------------------------------|-----------------------------------------------------|
-| `dsm_user`               | `name`                                             | `id`, `description`, `email`, `disabled`, `groups`, `uid` |
+| `dsm_user`               | `name`                                             | `id`, `description`, `email`, `disabled`, `expire_date`, `two_factor_enabled`, `groups`, `uid` |
 | `dsm_group`              | `name`                                             | `id`, `description`, `gid`                          |
 | `dsm_shared_folder`      | `name`                                             | `id`, `description`, `vol_path`, `hidden`, `enable_recycle_bin`, `recycle_bin_admin_only`, `enable_share_compress`, `enable_share_cow`, `share_quota`, `uuid` |
 | `dsm_share_permission`   | `share_name`, `user_group_type`, `principal_name`  | `id`, `permission`                                  |
