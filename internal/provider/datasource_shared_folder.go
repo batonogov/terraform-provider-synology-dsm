@@ -20,11 +20,17 @@ type sharedFolderDataSource struct {
 }
 
 type sharedFolderDataSourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Description types.String `tfsdk:"description"`
-	VolPath     types.String `tfsdk:"vol_path"`
-	UUID        types.String `tfsdk:"uuid"`
+	ID                  types.String `tfsdk:"id"`
+	Name                types.String `tfsdk:"name"`
+	Description         types.String `tfsdk:"description"`
+	VolPath             types.String `tfsdk:"vol_path"`
+	Hidden              types.Bool   `tfsdk:"hidden"`
+	EnableRecycleBin    types.Bool   `tfsdk:"enable_recycle_bin"`
+	RecycleBinAdminOnly types.Bool   `tfsdk:"recycle_bin_admin_only"`
+	EnableShareCompress types.Bool   `tfsdk:"enable_share_compress"`
+	EnableShareCow      types.Bool   `tfsdk:"enable_share_cow"`
+	ShareQuota          types.Int64  `tfsdk:"share_quota"`
+	UUID                types.String `tfsdk:"uuid"`
 }
 
 func (d *sharedFolderDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -51,6 +57,30 @@ func (d *sharedFolderDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 			"vol_path": schema.StringAttribute{
 				Computed:    true,
 				Description: "Volume path (e.g. /volume1).",
+			},
+			"hidden": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether the shared folder is hidden in network browsing.",
+			},
+			"enable_recycle_bin": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether the recycle bin is enabled.",
+			},
+			"recycle_bin_admin_only": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether recycle bin access is restricted to administrators.",
+			},
+			"enable_share_compress": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether file compression is enabled.",
+			},
+			"enable_share_cow": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether data checksum for advanced data integrity (copy-on-write) is enabled.",
+			},
+			"share_quota": schema.Int64Attribute{
+				Computed:    true,
+				Description: "Quota for the whole shared folder in gigabytes. `0` means unlimited.",
 			},
 			"uuid": schema.StringAttribute{
 				Computed:    true,
@@ -100,6 +130,12 @@ func (d *sharedFolderDataSource) Read(ctx context.Context, req datasource.ReadRe
 	config.ID = types.StringValue(share.Name)
 	config.Description = types.StringValue(share.Description)
 	config.VolPath = types.StringValue(share.VolPath)
+	config.Hidden = types.BoolValue(share.Hidden)
+	config.EnableRecycleBin = types.BoolValue(share.EnableRecycleBin)
+	config.RecycleBinAdminOnly = types.BoolValue(share.RecycleBinAdminOnly)
+	config.EnableShareCompress = types.BoolValue(share.EnableShareCompress)
+	config.EnableShareCow = types.BoolValue(share.EnableShareCow)
+	config.ShareQuota = types.Int64Value(share.ShareQuota)
 	config.UUID = types.StringValue(share.UUID)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)

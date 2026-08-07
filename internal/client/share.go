@@ -8,37 +8,42 @@ import (
 )
 
 type Share struct {
-	Name             string
-	Description      string
-	VolPath          string
-	UUID             string
-	Hidden           bool
-	EnableRecycleBin bool
+	Name                string
+	Description         string
+	VolPath             string
+	UUID                string
+	Hidden              bool
+	EnableRecycleBin    bool
+	RecycleBinAdminOnly bool
+	EnableShareCompress bool
+	EnableShareCow      bool
+	ShareQuota          int64
 }
 
 type CreateShareRequest struct {
-	Name             string
-	VolPath          string
-	Description      string
-	Hidden           bool
-	EnableRecycleBin bool
+	Name                string
+	VolPath             string
+	Description         string
+	Hidden              bool
+	EnableRecycleBin    bool
+	RecycleBinAdminOnly bool
+	EnableShareCompress bool
+	EnableShareCow      bool
+	ShareQuota          int64
 }
 
-func buildShareInfo(req CreateShareRequest, nameOrg string) string {
+func buildShareInfo(req CreateShareRequest) string {
 	m := map[string]interface{}{
 		"name":                   req.Name,
 		"vol_path":               req.VolPath,
 		"desc":                   req.Description,
 		"hidden":                 req.Hidden,
 		"enable_recycle_bin":     req.EnableRecycleBin,
-		"recycle_bin_admin_only": true,
-		"hide_unreadable":        false,
-		"enable_share_compress":  false,
-		"enable_share_cow":       false,
-		"share_quota":            0,
-	}
-	if nameOrg != "" {
-		m["name_org"] = nameOrg
+		"recycle_bin_admin_only": req.RecycleBinAdminOnly,
+		"enable_share_compress":  req.EnableShareCompress,
+		"enable_share_cow":       req.EnableShareCow,
+		// Written as share_quota, read back as quota_value. Unit is GB.
+		"share_quota": req.ShareQuota,
 	}
 	raw, _ := json.Marshal(m)
 	return string(raw)
@@ -47,7 +52,7 @@ func buildShareInfo(req CreateShareRequest, nameOrg string) string {
 func (c *Client) CreateShare(ctx context.Context, req CreateShareRequest) (*Share, error) {
 	params := url.Values{}
 	params.Set("name", req.Name)
-	params.Set("shareinfo", buildShareInfo(req, ""))
+	params.Set("shareinfo", buildShareInfo(req))
 
 	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "create", params)
 	if err != nil {
@@ -57,8 +62,19 @@ func (c *Client) CreateShare(ctx context.Context, req CreateShareRequest) (*Shar
 	return c.GetShare(ctx, req.Name)
 }
 
+// shareAdditionalFields are the extra attributes DSM only returns when asked
+// for explicitly. "recyclebin" is DSM's own spelling for the recycle bin flag,
+// which comes back as enable_recycle_bin.
+var shareAdditionalFields = []string{
+	"hidden",
+	"recyclebin",
+	"enable_share_compress",
+	"enable_share_cow",
+	"share_quota",
+}
+
 func (c *Client) GetShare(ctx context.Context, name string) (*Share, error) {
-	additional, _ := json.Marshal([]string{"hidden", "recyclebin"})
+	additional, _ := json.Marshal(shareAdditionalFields)
 
 	params := url.Values{}
 	params.Set("name", name)
@@ -101,12 +117,17 @@ func (c *Client) ListShares(ctx context.Context) ([]Share, error) {
 	return shares, nil
 }
 
+// UpdateShare applies new settings to an existing share.
+//
+// It uses the "set" method, not "create" with name_org: DSM rejects the latter
+// with error 3301 ("share already exists"), so an update built that way never
+// took effect.
 func (c *Client) UpdateShare(ctx context.Context, name string, req CreateShareRequest) (*Share, error) {
 	params := url.Values{}
-	params.Set("name", req.Name)
-	params.Set("shareinfo", buildShareInfo(req, name))
+	params.Set("name", name)
+	params.Set("shareinfo", buildShareInfo(req))
 
-	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "create", params)
+	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "set", params)
 	if err != nil {
 		return nil, fmt.Errorf("update share %q: %w", name, err)
 	}
@@ -154,6 +175,21 @@ func parseShare(raw json.RawMessage) (*Share, error) {
 		s.EnableRecycleBin = v
 	} else if v, ok := m["recyclebin"].(bool); ok {
 		s.EnableRecycleBin = v
+	}
+	if v, ok := m["recycle_bin_admin_only"].(bool); ok {
+		s.RecycleBinAdminOnly = v
+	}
+	if v, ok := m["enable_share_compress"].(bool); ok {
+		s.EnableShareCompress = v
+	}
+	if v, ok := m["enable_share_cow"].(bool); ok {
+		s.EnableShareCow = v
+	}
+	// The quota is written as share_quota but read back as quota_value.
+	if v, ok := m["quota_value"].(float64); ok {
+		s.ShareQuota = int64(v)
+	} else if v, ok := m["share_quota"].(float64); ok {
+		s.ShareQuota = int64(v)
 	}
 
 	return s, nil
