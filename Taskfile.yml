@@ -22,8 +22,15 @@ tasks:
 
   test-acc:
     desc: Run acceptance tests (requires real DSM)
+    deps: [sweep]
     cmds:
       - TF_ACC=1 go test -v -timeout 30m ./...
+
+  sweep:
+    desc: Delete leftover acceptance-test resources (tfacctest* only) from the target DSM
+    cmds:
+      # Only the root package registers sweepers, hence "." rather than "./...".
+      - go test . -sweep=all -timeout 10m
 
   lint:
     desc: Run go vet
