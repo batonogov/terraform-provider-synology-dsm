@@ -1,6 +1,7 @@
 package acctest
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 
+	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/provider"
 )
 
@@ -35,6 +37,24 @@ func TestAccPreCheckQuota(t *testing.T) {
 	if os.Getenv("DSM_ACC_QUOTA") != "1" {
 		t.Skip("skipping user quota test: SYNO.Core.Share.Quota is not available on virtual DSM; set DSM_ACC_QUOTA=1 against real hardware")
 	}
+}
+
+// NewTestClient builds a logged-in DSM client from the acceptance-test
+// environment. Use it in CheckDestroy hooks that need to inspect DSM directly,
+// beyond what the Terraform state can tell.
+func NewTestClient(t *testing.T) *client.Client {
+	t.Helper()
+
+	c := client.NewClient(
+		os.Getenv("SYNOLOGY_DSM_HOST"),
+		os.Getenv("SYNOLOGY_DSM_USERNAME"),
+		os.Getenv("SYNOLOGY_DSM_PASSWORD"),
+		true,
+	)
+	if err := c.Login(context.Background()); err != nil {
+		t.Fatalf("acceptance test client login: %v", err)
+	}
+	return c
 }
 
 func TestAccProviderFactories() map[string]func() (tfprotov6.ProviderServer, error) {

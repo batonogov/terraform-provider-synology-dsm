@@ -93,9 +93,12 @@ func TestClient_DoAPI_ReloginOn119(t *testing.T) {
 	}
 }
 
-// TestClient_DoAPI_119BoundedRetries proves that a persistent 119 (every call
-// fails) does NOT cause an infinite loop: it terminates after maxRetries.
-func TestClient_DoAPI_119BoundedRetries(t *testing.T) {
+// TestClient_DoAPI_119ReloginOnlyOnce proves that a persistent 119 (every call
+// fails) re-logins exactly once and then surfaces the 119 verbatim. A 119 that
+// survives a brand-new session is not an expired session — some APIs, notably
+// SYNO.Core.User.Home, answer 119 for "not the built-in admin". Burning every
+// attempt on pointless logins would mask that behind "max retries exceeded".
+func TestClient_DoAPI_119ReloginOnlyOnce(t *testing.T) {
 	f := newReloginFixture(t, 1_000_000) // always fail
 	defer f.server.Close()
 
@@ -103,18 +106,19 @@ func TestClient_DoAPI_119BoundedRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when 119 is persistent, got nil")
 	}
-	// Persistent 119: each of maxRetries attempts re-logins (successfully) then
-	// retries, and the call still fails. The terminal error reports exhaustion
-	// with the 119 context (not "re-login", which only appears if Login fails).
-	if !strings.Contains(err.Error(), "max retries exceeded") {
-		t.Fatalf("error should report retries exhausted, got: %v", err)
-	}
 	if !strings.Contains(err.Error(), "api error 119") {
 		t.Fatalf("error should carry the 119 context, got: %v", err)
 	}
-	// 1 initial login + maxRetries re-login attempts.
-	if got := f.logins.Load(); got != int64(maxRetries+1) {
-		t.Fatalf("expected %d logins total (1 initial + %d re-logins), got %d", maxRetries+1, maxRetries, got)
+	if strings.Contains(err.Error(), "max retries exceeded") {
+		t.Fatalf("persistent 119 should be returned verbatim, not as retry exhaustion: %v", err)
+	}
+	// 1 initial login + exactly 1 re-login.
+	if got := f.logins.Load(); got != 2 {
+		t.Fatalf("expected 2 logins total (1 initial + 1 re-login), got %d", got)
+	}
+	// Two real calls: the original and the single post-re-login retry.
+	if got := f.calls119.Load(); got != 2 {
+		t.Fatalf("expected 2 API attempts (original + 1 retry), got %d", got)
 	}
 }
 

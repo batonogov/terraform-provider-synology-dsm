@@ -1,6 +1,6 @@
 # terraform-provider-synology-dsm
 
-A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as a corporate file cloud — provision users, groups, shared folders, share permissions, and user quotas as Infrastructure as Code.
+A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as a corporate file cloud — provision users, groups, shared folders, share permissions, user quotas, and per-user home folders as Infrastructure as Code.
 
 Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.API.Auth` v7 with SynoToken). Developed and tested against DSM 7.2.2 and DSM 7.3.2.
 
@@ -13,8 +13,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_shared_folder`](#dsm_shared_folder) | Manage shared folders |
 | [`dsm_share_permission`](#dsm_share_permission) | Manage share-level access (R/W/deny) for users and groups |
 | [`dsm_user_quota`](#dsm_user_quota) | Manage per-user quotas on a shared folder |
+| [`dsm_user_home_service`](#dsm_user_home_service) | Enable per-user home folders (the `homes` shared folder) |
 
-Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`) for reading existing objects.
+Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`) for reading existing objects.
 
 ## Requirements
 
@@ -211,6 +212,54 @@ terraform import dsm_user_quota.john_quota team-data:john.doe
 > supported) on the virtual DSM used for acceptance testing. It works on real
 > hardware running DSM 7.2+/7.3+.
 
+### `dsm_user_home_service`
+
+Enables the DSM user home service, which gives every user a personal folder
+under the `homes` shared folder (`/volume1/homes/<username>`). This underpins
+personal storage and Synology Drive's `/home/drive` space.
+
+The service is a single NAS-wide setting, so declare **at most one** instance of
+this resource per DSM host. Enabling it creates the `homes` shared folder.
+
+| Attribute            | Type   | Required | Computed | Description                                                        |
+|----------------------|--------|----------|----------|--------------------------------------------------------------------|
+| `id`                 | string | -        | yes      | Always `user_home_service`                                          |
+| `location`           | string | yes      | -        | Volume **path** hosting `homes`, e.g. `/volume1`                    |
+| `enable`             | bool   | -        | yes      | Whether the service is on. Defaults to `true`                       |
+| `enable_recycle_bin` | bool   | -        | yes      | Recycle bin on the `homes` folder. Defaults to `false`              |
+| `force`              | bool   | -        | yes      | Pass DSM's `force` flag to override soft warnings. Defaults to `false` |
+| `disable_on_destroy` | bool   | -        | yes      | Whether `destroy` turns the service off. Defaults to `false`        |
+
+```hcl
+resource "dsm_user_home_service" "homes" {
+  location           = "/volume1"
+  enable_recycle_bin = true
+}
+
+# Per-user quotas can then be placed on the homes share.
+resource "dsm_user_quota" "john_home" {
+  share_name = "homes"
+  username   = dsm_user.john.name
+  quota_size = 21474836480 # 20 GB
+  depends_on = [dsm_user_home_service.homes]
+}
+```
+
+```bash
+terraform import dsm_user_home_service.homes user_home_service
+```
+
+> **`location` must be a path.** DSM rejects a bare volume name such as
+> `volume1` with error 3101; use `/volume1`.
+
+> **Destroy is a no-op by default.** Turning the service off is a NAS-wide
+> action that takes personal folders away from every user and breaks Synology
+> Drive and Photos. Set `disable_on_destroy = true` to opt in. Files under
+> `homes` are never deleted by this resource either way.
+
+> **Requires the built-in `admin` account.** `SYNO.Core.User.Home` answers error
+> 119 for other administrator accounts even when the session is valid.
+
 ## Data sources
 
 Each resource has a read-only data source counterpart that takes the identifying
@@ -223,6 +272,7 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_shared_folder`      | `name`                                             | `id`, `description`, `vol_path`, `uuid`             |
 | `dsm_share_permission`   | `share_name`, `user_group_type`, `principal_name`  | `id`, `permission`                                  |
 | `dsm_user_quota`         | `share_name`, `username`                           | `id`, `quota_size`, `quota_used`                    |
+| `dsm_user_home_service`  | — (singleton)                                      | `id`, `enable`, `location`, `enable_recycle_bin`, `enable_domain`, `enable_ldap`, `encryption`, `personal_photo_enable` |
 
 ## Development
 
@@ -262,7 +312,11 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - The user quota API returns error 102 — not supported on virtual DSM. The
   three `dsm_user_quota` acceptance tests are skipped unless `DSM_ACC_QUOTA=1`
   is set; run them against real hardware with that env var enabled.
-- Sessions are short-lived; the provider re-authenticates on error 119 automatically.
+- Sessions are short-lived; the provider re-authenticates on error 119 automatically
+  (once per call — a 119 that survives a fresh session is reported as is, since
+  some APIs use that code for "not the built-in admin").
+- The user home service (`SYNO.Core.User.Home`) works fully on virtual DSM, so
+  its acceptance tests run unconditionally.
 
 ### Release flow
 
