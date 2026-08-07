@@ -313,7 +313,8 @@ This project uses [Task](https://taskfile.dev) (not Make).
 ```bash
 task build          # build the provider binary to bin/
 task test           # run unit tests (go test -v -count=1 ./...)
-task test-acc       # run acceptance tests (TF_ACC=1, requires a reachable DSM)
+task test-acc       # sweep leftovers, then run acceptance tests (requires a reachable DSM)
+task sweep          # delete leftover acceptance-test resources without running tests
 task lint           # go vet ./...
 task install        # build + install into ~/.terraform.d/plugins/ for local use
 task clean          # remove build artifacts and test cache
@@ -344,6 +345,10 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - The user quota API returns error 102 — not supported on virtual DSM. The
   three `dsm_user_quota` acceptance tests are skipped unless `DSM_ACC_QUOTA=1`
   is set; run them against real hardware with that env var enabled.
+- Leftovers from a failed or interrupted run make the next one fail on creation
+  with error 3301. `task test-acc` sweeps first; run `task sweep` on its own to
+  clean up manually. Sweepers only delete objects whose name starts with
+  `tfacctest`, so anything else on the NAS is left alone.
 - Sessions are short-lived; the provider re-authenticates on error 119 automatically
   (once per call — a 119 that survives a fresh session is reported as is, since
   some APIs use that code for "not the built-in admin").

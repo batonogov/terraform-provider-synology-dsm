@@ -115,6 +115,7 @@ conventional commits → Release Please PR → merge → GitHub Release → GoRe
 Tests run against a **virtual DSM** (QEMU via Lima VM + Docker):
 
 ```
+task sweep            # Delete leftover tfacctest* resources from the target DSM
 task test-env-up      # Start Lima VM + virtual-dsm container
 task test-env-down    # Stop everything
 task test-env-status  # Check status
@@ -153,7 +154,7 @@ TF_ACC=1 go test -v -timeout 30m ./...
 
 ## Known Issues
 
-- **Test state pollution** — acc tests don't clean up created resources between runs, causing "already exists" (3301) errors on shared folders. Consider adding unique suffixes or explicit cleanup.
+- ~~**Test state pollution**~~ — resolved: sweepers in `sweeper_test.go` delete leftovers named `tfacctest*` before a run. `task test-acc` sweeps automatically; `task sweep` runs it standalone. Only the root package registers sweepers, so the command is `go test . -sweep=all` (not `./...`, which fails with "flag provided but not defined").
 - **`dsm_user.password` blocks clean import** — `password` is `Required` + `Sensitive` and DSM never returns it, so `terraform import` of `dsm_user` leaves a non-empty plan until `password` is added to the config. A `WriteOnly`/`Optional+Computed` treatment is a future option.
 - **Explicit `""` on optional strings** — `nullableString` normalizes empty descriptions/emails to null on Read (fixing the omitted-attribute drift). Setting `description = ""` explicitly still produces a perpetual diff because DSM cannot represent an intentional empty string; see `internal/provider/helpers.go`.
 - **Quota untested on hardware** — the quota resource only validates on a real NAS (`DSM_ACC_QUOTA=1`); it is skipped on the virtual DSM.
