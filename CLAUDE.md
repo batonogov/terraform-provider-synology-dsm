@@ -41,8 +41,11 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 - **`_sid` and `SynoToken` must be in query string for POST requests** — DSM validates session from URL params, not POST body. `DoAPIPost()` handles this by moving them from body to query string.
 - **Auth version 7** — `SYNO.API.Auth` version 7 with `enable_syno_token=yes`
 - **Session via `_sid`** — Login returns SID, passed as `_sid` query param (no cookies needed with `format=sid`)
+- **User home service is asynchronous-capable** — `SYNO.Core.User.Home` `set` is POST. On virtual DSM it completes synchronously (`{"success":true}`), but the API can return a `task_id`; poll `status` with that id until `finish: true`. `location` must be a volume **path** (`/volume1`) — a bare `volume1` gives error 3101. When disabling, send `enable=false` alone; extra fields trigger 3103. Full findings: `.pi/recon-user-home-2026-08-07.md`
 - Error 105 = "session does not have permission" — usually means wrong HTTP method or missing SynoToken
-- Error 119 = "SID not found or invalid" — typically means SID not in query string for POST, or session expired
+- Error 119 = "SID not found or invalid" — typically means SID not in query string for POST, or session expired. **Also returned by `SYNO.Core.User.Home` when the account is not the built-in `admin`** — hence `doRequestWithRetry` re-logins at most once per call and then surfaces the 119 verbatim
+- Error 3101 = "invalid location" for `SYNO.Core.User.Home` (bare volume name instead of a path)
+- Error 3103 = "location parameter missing" for `SYNO.Core.User.Home`
 - Error 3301 = "share already exists"
 - Error 3106 = "user not found" (from `get` method with `additional` param)
 
@@ -152,7 +155,9 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - **`dsm_user.password` blocks clean import** — `password` is `Required` + `Sensitive` and DSM never returns it, so `terraform import` of `dsm_user` leaves a non-empty plan until `password` is added to the config. A `WriteOnly`/`Optional+Computed` treatment is a future option.
 - **Explicit `""` on optional strings** — `nullableString` normalizes empty descriptions/emails to null on Read (fixing the omitted-attribute drift). Setting `description = ""` explicitly still produces a perpetual diff because DSM cannot represent an intentional empty string; see `internal/provider/helpers.go`.
 - **Quota untested on hardware** — the quota resource only validates on a real NAS (`DSM_ACC_QUOTA=1`); it is skipped on the virtual DSM.
+- **`personal_photo_enable` is read-only in practice** — `SYNO.Core.User.Home` `set` accepts the parameter and answers `success:true`, but `get` keeps reporting `false` (likely needs the Synology Photos package). It is therefore exposed only on the `dsm_user_home_service` data source, not the resource, to avoid a perpetual diff.
+- **User home service needs the built-in `admin`** — other administrator accounts get error 119 from `SYNO.Core.User.Home` even with a valid session.
 
 ## Roadmap
 
-Synology Drive → Photos
+Remaining gaps from `.pi/audit-scenario-gap.md` targeted for 0.1.0: extended `dsm_shared_folder` attributes (protocols, encryption, Copy-on-Write, share quota — currently hardcoded in `buildShareInfo()`), a `dsm_group_member` resource for atomic membership, and the missing `dsm_user` fields (`expire_date`, 2FA, allowed IPs). Then: Synology Drive → Photos.

@@ -246,6 +246,7 @@ func (c *Client) executeRequest(ctx context.Context, params url.Values, httpMeth
 
 func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values, httpMethod string) (*APIResponse, error) {
 	var lastErr error
+	reloggedIn := false
 
 	for attempt := range maxRetries {
 		if attempt > 0 {
@@ -263,12 +264,22 @@ func (c *Client) doRequestWithRetry(ctx context.Context, params url.Values, http
 			// Error 119 = "SID not found or invalid" (session expired). DSM
 			// sessions are short-lived; a long apply can outlive the SID.
 			// Re-login once and retry with a fresh session.
-			if isSessionExpiredError(err) {
+			//
+			// Only once, though: some APIs (SYNO.Core.User.Home in particular)
+			// also answer 119 when the session is perfectly valid but the account
+			// is not the built-in admin. Retrying that would burn every attempt on
+			// pointless logins and surface as "max retries exceeded", hiding the
+			// real cause — so a 119 that survives a fresh session is returned as is.
+			if isSessionExpiredError(err) && !reloggedIn {
 				if relErr := c.relogin(ctx); relErr != nil {
 					return nil, fmt.Errorf("re-login after expired session: %w (original: %v)", relErr, err)
 				}
+				reloggedIn = true
 				params = c.refreshSessionParams(params)
 				continue
+			}
+			if isSessionExpiredError(err) {
+				return nil, err
 			}
 			if isTransientError(err) {
 				continue
