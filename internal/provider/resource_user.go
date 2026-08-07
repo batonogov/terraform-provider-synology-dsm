@@ -3,12 +3,14 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -31,6 +33,8 @@ type userResourceModel struct {
 	Description types.String `tfsdk:"description"`
 	Email       types.String `tfsdk:"email"`
 	Disabled    types.Bool   `tfsdk:"disabled"`
+	ExpireDate  types.String `tfsdk:"expire_date"`
+	TwoFactor   types.Bool   `tfsdk:"two_factor_enabled"`
 	Groups      types.List   `tfsdk:"groups"`
 	UID         types.Int64  `tfsdk:"uid"`
 }
@@ -59,9 +63,10 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"password": schema.StringAttribute{
-				Required:    true,
-				Sensitive:   true,
-				Description: "Password for the account.",
+				Optional:  true,
+				Sensitive: true,
+				Description: "Password for the account. Required when creating a user; DSM never returns it, " +
+					"so it may be omitted when adopting an existing account with `terraform import`.",
 			},
 			"description": schema.StringAttribute{
 				Optional:    true,
@@ -72,10 +77,24 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Description: "Email address for the user.",
 			},
 			"disabled": schema.BoolAttribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(false),
-				Description: "Whether the account is disabled.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Whether the account is disabled. Mutually exclusive with `expire_date`: DSM stores " +
+					"both in a single field, so a disabled account cannot also carry an expiry date.",
+			},
+			"expire_date": schema.StringAttribute{
+				Optional: true,
+				Description: "Date the account expires, as `YYYY-MM-DD` (for example `2027-03-05`). " +
+					"Omit for an account that never expires. Mutually exclusive with `disabled`.",
+			},
+			"two_factor_enabled": schema.BoolAttribute{
+				Computed: true,
+				Description: "Whether two-factor authentication is enabled for this account. Read-only: " +
+					"DSM manages 2FA through a separate API (`SYNO.Core.OTP`), not through user attributes.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"groups": schema.ListAttribute{
 				Optional:    true,
@@ -135,6 +154,7 @@ func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, r
 		Description: plan.Description.ValueString(),
 		Email:       plan.Email.ValueString(),
 		Disabled:    plan.Disabled.ValueBool(),
+		ExpireDate:  plan.ExpireDate.ValueString(),
 		Groups:      groups,
 	})
 	if err != nil {
@@ -147,6 +167,7 @@ func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	plan.ID = types.StringValue(user.Name)
 	plan.UID = types.Int64Value(int64(user.UID))
+	plan.TwoFactor = types.BoolValue(user.TwoFactor)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -181,6 +202,8 @@ func (r *userResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	state.Description = nullableString(user.Description)
 	state.Email = nullableString(user.Email)
 	state.Disabled = types.BoolValue(user.Disabled)
+	state.ExpireDate = nullableString(user.ExpireDate)
+	state.TwoFactor = types.BoolValue(user.TwoFactor)
 	state.UID = types.Int64Value(int64(user.UID))
 
 	if len(user.Groups) > 0 {
@@ -223,11 +246,13 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	disabled := plan.Disabled.ValueBool()
+	expireDate := plan.ExpireDate.ValueString()
 	user, err := r.client.UpdateUser(ctx, state.Name.ValueString(), client.UpdateUserRequest{
 		Password:    plan.Password.ValueString(),
 		Description: plan.Description.ValueString(),
 		Email:       plan.Email.ValueString(),
 		Disabled:    &disabled,
+		ExpireDate:  &expireDate,
 		Groups:      groups,
 	})
 	if err != nil {
@@ -240,6 +265,7 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	plan.ID = types.StringValue(user.Name)
 	plan.UID = types.Int64Value(int64(user.UID))
+	plan.TwoFactor = types.BoolValue(user.TwoFactor)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -266,4 +292,63 @@ func (r *userResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 
 func (r *userResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// ValidateConfig enforces the two rules DSM's own data model implies but its
+// API does not report clearly.
+func (r *userResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config userResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// DSM keeps the account state in a single "expired" field, so "switched
+	// off" and "expires on a date" cannot both hold.
+	if config.Disabled.ValueBool() && !config.ExpireDate.IsNull() && !config.ExpireDate.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("expire_date"),
+			"disabled and expire_date are mutually exclusive",
+			"DSM stores the account state in one field, so an account cannot be both disabled and carry an "+
+				"expiry date. Drop expire_date to keep the account disabled, or set disabled = false to use the date.",
+		)
+	}
+
+	if !config.ExpireDate.IsNull() && !config.ExpireDate.IsUnknown() {
+		if _, err := time.Parse("2006-01-02", config.ExpireDate.ValueString()); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("expire_date"),
+				"Invalid expire_date format",
+				fmt.Sprintf("expire_date must be YYYY-MM-DD (for example 2027-03-05), got %q.",
+					config.ExpireDate.ValueString()),
+			)
+		}
+	}
+}
+
+// ModifyPlan requires a password when the user is being created. The attribute
+// itself is optional so that `terraform import` of an existing account does not
+// leave a permanently dirty plan — DSM never returns the password, so there is
+// nothing to import it from.
+func (r *userResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Null state means create; null plan means destroy. Only the former needs a
+	// password.
+	if !req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan userResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.Password.IsNull() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("password"),
+			"password is required when creating a user",
+			"DSM cannot create an account without a password. It may only be omitted for a user adopted "+
+				"with terraform import, since DSM never returns an existing password.",
+		)
+	}
 }

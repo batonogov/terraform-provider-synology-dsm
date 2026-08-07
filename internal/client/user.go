@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"time"
 )
 
 type User struct {
@@ -12,6 +13,8 @@ type User struct {
 	Description string
 	Email       string
 	Disabled    bool
+	ExpireDate  string
+	TwoFactor   bool
 	Groups      []string
 	UID         int
 }
@@ -22,6 +25,7 @@ type CreateUserRequest struct {
 	Description string
 	Email       string
 	Disabled    bool
+	ExpireDate  string
 	Groups      []string
 }
 
@@ -32,7 +36,50 @@ type UpdateUserRequest struct {
 	Description string
 	Email       string
 	Disabled    *bool
+	ExpireDate  *string
 	Groups      []string
+}
+
+// DSM account state lives in a single "expired" field rather than a boolean.
+const (
+	userExpiredNormal = "normal"
+	userExpiredNow    = "now"
+)
+
+// expiredParam renders the account state DSM expects. disabled wins over an
+// expiry date: an account switched off should stay off regardless of any date.
+func expiredParam(disabled bool, expireDate string) string {
+	switch {
+	case disabled:
+		return userExpiredNow
+	case expireDate != "":
+		return toDSMDate(expireDate)
+	default:
+		return userExpiredNormal
+	}
+}
+
+// toDSMDate converts YYYY-MM-DD to the YYYY/M/D form DSM accepts. An ISO date
+// with dashes is rejected outright with error 3103. Anything unparseable is
+// passed through so DSM reports the problem rather than the provider guessing.
+func toDSMDate(iso string) string {
+	t, err := time.Parse("2006-01-02", iso)
+	if err != nil {
+		return iso
+	}
+	return fmt.Sprintf("%d/%d/%d", t.Year(), int(t.Month()), t.Day())
+}
+
+// fromDSMDate converts DSM's YYYY/M/D back to YYYY-MM-DD. DSM always answers
+// without leading zeros no matter how the value was written, so normalising
+// here is what keeps a configured "2027-03-05" from drifting against the
+// "2027/3/5" that comes back.
+func fromDSMDate(dsm string) string {
+	t, err := time.Parse("2006/1/2", dsm)
+	if err != nil {
+		return dsm
+	}
+	return t.Format("2006-01-02")
 }
 
 func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, error) {
@@ -46,7 +93,9 @@ func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, 
 	if req.Email != "" {
 		params.Set("email", req.Email)
 	}
-	params.Set("disabled", boolParam(req.Disabled))
+	// "disabled" is silently ignored by DSM 7 — account state travels in
+	// "expired". See .pi/recon-user-fields-2026-08-07.md.
+	params.Set("expired", expiredParam(req.Disabled, req.ExpireDate))
 
 	if len(req.Groups) > 0 {
 		groupsJSON, _ := json.Marshal(req.Groups)
@@ -61,11 +110,16 @@ func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, 
 	return c.GetUser(ctx, req.Name)
 }
 
+// userAdditionalFields are the attributes DSM only returns when asked for.
+// "expired" carries the account state (normal / now / an expiry date) and
+// "2fa_status" whether two-factor auth is on.
+const userAdditionalFields = `["description","email","expired","groups","2fa_status"]`
+
 func (c *Client) GetUser(ctx context.Context, name string) (*User, error) {
 	params := url.Values{}
 	params.Set("offset", "0")
 	params.Set("limit", "-1")
-	params.Set("additional", `["description","email","disabled","groups"]`)
+	params.Set("additional", userAdditionalFields)
 
 	data, err := c.DoAPI(ctx, "SYNO.Core.User", "1", "list", params)
 	if err != nil {
@@ -138,15 +192,22 @@ func (c *Client) UpdateUser(ctx context.Context, username string, req UpdateUser
 	if req.Email != "" {
 		params.Set("email", req.Email)
 	}
-	if req.Disabled != nil {
-		params.Set("disabled", boolParam(*req.Disabled))
+	if req.Disabled != nil || req.ExpireDate != nil {
+		disabled := req.Disabled != nil && *req.Disabled
+		expireDate := ""
+		if req.ExpireDate != nil {
+			expireDate = *req.ExpireDate
+		}
+		params.Set("expired", expiredParam(disabled, expireDate))
 	}
 	if len(req.Groups) > 0 {
 		groupsJSON, _ := json.Marshal(req.Groups)
 		params.Set("groups", string(groupsJSON))
 	}
 
-	_, err := c.DoAPI(ctx, "SYNO.Core.User", "1", "update", params)
+	// The method is "set". SYNO.Core.User has no "update" method at all — it
+	// answers 103 ("method not exist"), so updates built that way never applied.
+	_, err := c.DoAPI(ctx, "SYNO.Core.User", "1", "set", params)
 	if err != nil {
 		return nil, fmt.Errorf("update user %q: %w", username, err)
 	}
@@ -189,8 +250,23 @@ func parseUser(raw json.RawMessage) (*User, error) {
 	if v, ok := m["email"].(string); ok {
 		u.Email = v
 	}
+	// DSM 7 no longer returns "disabled"; account state comes from "expired",
+	// which is either "normal", "now", or an expiry date.
 	if v, ok := m["disabled"].(bool); ok {
 		u.Disabled = v
+	}
+	if v, ok := m["expired"].(string); ok {
+		switch v {
+		case userExpiredNow:
+			u.Disabled = true
+		case userExpiredNormal, "":
+			// Active with no expiry date.
+		default:
+			u.ExpireDate = fromDSMDate(v)
+		}
+	}
+	if v, ok := m["2fa_status"].(bool); ok {
+		u.TwoFactor = v
 	}
 	if uid, ok := m["uid"].(json.Number); ok {
 		n, _ := uid.Int64()

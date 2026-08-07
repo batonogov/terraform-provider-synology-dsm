@@ -32,6 +32,15 @@ resource "dsm_user" "example" {
   groups      = ["users"]
 }
 
+# A contractor account that stops working after a fixed date. expire_date and
+# disabled are mutually exclusive: DSM keeps both in a single field.
+resource "dsm_user" "contractor" {
+  name        = "jane.contractor"
+  password    = var.user_password
+  description = "Contractor - access until the end of the project"
+  expire_date = "2027-03-05"
+}
+
 # A personal folder exists for every user once the home service is on, so quotas
 # can be placed on the `homes` share.
 resource "dsm_user_quota" "example_home" {

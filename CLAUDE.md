@@ -37,6 +37,7 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 - **Developed against DSM 7.2.2** (virtual DSM) and DSM 7.3.2 on RS4021xs+ — API behavior may differ on DSM 6.x
 
 - **Most APIs use GET** — user/group operations send params as query string
+- **`SYNO.Core.User` update is `method=set`** — there is no `update` method; it answers 103 ("method not exist"). Account state is **not** the `disabled` param (accepted and ignored on DSM 7) but `expired`: `normal` / `now` / a `YYYY/M/D` date. DSM always answers dates without leading zeros regardless of input, so the client normalises to `YYYY-MM-DD`. Full findings: `.pi/recon-user-fields-2026-08-07.md`
 - **Shared folder uses POST** — `SYNO.Core.Share` create/update send `shareinfo` as form-encoded POST body. **Update is `method=set`, not `create` with `name_org`** — the latter is rejected with 3301. `share_quota` is written under that name but read back as `quota_value`, and its unit is **gigabytes**. `enable_share_compress`/`enable_share_cow` are creation-time only (a later `set` reports success and changes nothing), and compression requires cow. Full findings: `.pi/recon-share-attributes-2026-08-07.md`
 - **`_sid` and `SynoToken` must be in query string for POST requests** — DSM validates session from URL params, not POST body. `DoAPIPost()` handles this by moving them from body to query string.
 - **Auth version 7** — `SYNO.API.Auth` version 7 with `enable_syno_token=yes`
@@ -51,6 +52,7 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 
 ## Client patterns
 
+- **User fields DSM will not round-trip** — `cannot_chg_passwd` and `allow_ip` are accepted by `set` but never returned by `list`; `passwd_never_expire` is ignored outright. All three are left out of the schema. Per-user IP restrictions on DSM 7 live in the firewall (`SYNO.Core.Security.Firewall.*`), not the account.
 - **User `get` returns minimal data without `additional`** — only `name` and `uid`. To get `description`, `email`, `disabled`, `groups` use `list` method with `additional=["description","email","disabled","groups"]` and filter by name.
 - **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
 - **Simple resources** (user, group): all CRUD via `DoAPI()` (GET). Delete sends name as JSON array.
@@ -138,8 +140,9 @@ task test-env-status  # Check status
 - Each resource has: basic create, import (two-step: create then import), and data source tests
 - Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency
 
-**Current acc-test status (23 PASS / 0 FAIL / 3 SKIP), verified 2026-08-07:**
+**Current acc-test status (26 PASS / 0 FAIL / 3 SKIP), verified 2026-08-07:**
 - PASS: all `*_basic` and `*_import` tests for group, user, shared_folder, share_permission (two-step create→import), plus the data source tests
+- PASS: the six `dsm_user` tests — create, update, disabled, expiry date, import, and the data source
 - PASS: the six `dsm_shared_folder` tests — create, extended attributes, in-place update, replacement when compression is switched on, import, and the data source
 - PASS: the eight `dsm_user_home_service` tests — create, recycle-bin update, import, the `homes` share side effect, both destroy modes (`disable_on_destroy` on and off), the bad-location diagnostic, and the data source
 - SKIP: `TestAccUserQuota_basic`, `TestAccUserQuota_import`, `TestAccDataSourceUserQuota_basic` — gated behind `DSM_ACC_QUOTA=1`; `SYNO.Core.Share.Quota` is error 102 on virtual DSM, works on real hardware
@@ -155,7 +158,7 @@ TF_ACC=1 go test -v -timeout 30m ./...
 ## Known Issues
 
 - ~~**Test state pollution**~~ — resolved: sweepers in `sweeper_test.go` delete leftovers named `tfacctest*` before a run. `task test-acc` sweeps automatically; `task sweep` runs it standalone. Only the root package registers sweepers, so the command is `go test . -sweep=all` (not `./...`, which fails with "flag provided but not defined").
-- **`dsm_user.password` blocks clean import** — `password` is `Required` + `Sensitive` and DSM never returns it, so `terraform import` of `dsm_user` leaves a non-empty plan until `password` is added to the config. A `WriteOnly`/`Optional+Computed` treatment is a future option.
+- ~~**`dsm_user.password` blocks clean import**~~ — resolved: `password` is now `Optional` + `Sensitive`, with `ModifyPlan` requiring it only when the user is actually being created. An imported account can be managed without putting the password in config.
 - **Explicit `""` on optional strings** — `nullableString` normalizes empty descriptions/emails to null on Read (fixing the omitted-attribute drift). Setting `description = ""` explicitly still produces a perpetual diff because DSM cannot represent an intentional empty string; see `internal/provider/helpers.go`.
 - **Quota untested on hardware** — the quota resource only validates on a real NAS (`DSM_ACC_QUOTA=1`); it is skipped on the virtual DSM.
 - **Shared folder fields DSM will not round-trip** — `hide_unreadable` can be written but is never returned by `get`, and `unite_permission` is accepted and ignored. Both are left out of the schema rather than exposed as permanent drift.
