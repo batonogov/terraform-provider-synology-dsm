@@ -142,21 +142,65 @@ func (c *Client) DeleteFile(ctx context.Context, filePath string) error {
 	return nil
 }
 
-// uploadRequest performs a multipart/form-data POST. The regular request path
-// cannot be reused: it form-encodes every parameter, and File Station only
-// accepts file content as a multipart part.
+// multipartPart is one part of a multipart body. An empty Filename makes it a
+// plain text field; anything else makes it a file part.
+//
+// The parts are an ordered slice rather than a map because order is load
+// bearing and differs per API: File Station needs every text field ahead of the
+// file, while certificate import is known to work with the files first. Neither
+// order is documented, so each caller states its own.
+type multipartPart struct {
+	field    string
+	filename string
+	value    []byte
+}
+
+func textPart(field, value string) multipartPart {
+	return multipartPart{field: field, value: []byte(value)}
+}
+
+func filePart(field, filename string, content []byte) multipartPart {
+	return multipartPart{field: field, filename: filename, value: content}
+}
+
+// uploadRequest performs a File Station upload: every text field first — the
+// api/version/method triple included, because File Station reads them from the
+// body as well as the URL — and the file part strictly last.
 func (c *Client) uploadRequest(ctx context.Context, api, version, method string, fields url.Values, filename string, content []byte) (json.RawMessage, error) {
+	textFields := url.Values{}
+	maps.Copy(textFields, fields)
+	textFields.Set("api", api)
+	textFields.Set("version", version)
+	textFields.Set("method", method)
+
+	// Sorted so the wire format is deterministic and diffable in tests.
+	parts := make([]multipartPart, 0, len(textFields)+1)
+	for _, key := range slices.Sorted(maps.Keys(textFields)) {
+		parts = append(parts, textPart(key, textFields.Get(key)))
+	}
+	// DSM's uploader consumes the stream sequentially and ignores anything that
+	// follows the file content, so a trailing parameter would be silently lost.
+	parts = append(parts, filePart("file", filename, content))
+
+	return c.multipartRequest(ctx, api, version, method, parts)
+}
+
+// multipartRequest performs a multipart/form-data POST. The regular request
+// path cannot be reused: it form-encodes every parameter, and the APIs that
+// take file content (File Station uploads, certificate import) only accept it
+// as a multipart part.
+func (c *Client) multipartRequest(ctx context.Context, api, version, method string, parts []multipartPart) (json.RawMessage, error) {
 	var data json.RawMessage
 	err := c.retryFileTransfer(ctx, func(ctx context.Context) error {
 		var attemptErr error
-		data, attemptErr = c.uploadAttempt(ctx, api, version, method, fields, filename, content)
+		data, attemptErr = c.uploadAttempt(ctx, api, version, method, parts)
 		return attemptErr
 	})
 	return data, err
 }
 
-func (c *Client) uploadAttempt(ctx context.Context, api, version, method string, fields url.Values, filename string, content []byte) (json.RawMessage, error) {
-	body, contentType, err := buildUploadBody(api, version, method, fields, filename, content)
+func (c *Client) uploadAttempt(ctx context.Context, api, version, method string, parts []multipartPart) (json.RawMessage, error) {
+	body, contentType, err := buildUploadBody(parts)
 	if err != nil {
 		return nil, err
 	}
@@ -202,33 +246,25 @@ func (c *Client) uploadAttempt(ctx context.Context, api, version, method string,
 	return decodeAPIEnvelope(payload, api)
 }
 
-// buildUploadBody assembles the multipart body. Every text field is written
-// first and the file part strictly last: DSM's uploader consumes the multipart
-// stream sequentially and ignores anything that follows the file content, so a
-// trailing parameter is silently lost.
-func buildUploadBody(api, version, method string, fields url.Values, filename string, content []byte) (io.Reader, string, error) {
+// buildUploadBody writes the parts in the order the caller gave them.
+func buildUploadBody(parts []multipartPart) (io.Reader, string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	textFields := url.Values{}
-	maps.Copy(textFields, fields)
-	textFields.Set("api", api)
-	textFields.Set("version", version)
-	textFields.Set("method", method)
-
-	// Sorted so the wire format is deterministic and diffable in tests.
-	for _, key := range slices.Sorted(maps.Keys(textFields)) {
-		if err := writer.WriteField(key, textFields.Get(key)); err != nil {
-			return nil, "", fmt.Errorf("write upload field %q: %w", key, err)
+	for _, part := range parts {
+		if part.filename == "" {
+			if err := writer.WriteField(part.field, string(part.value)); err != nil {
+				return nil, "", fmt.Errorf("write upload field %q: %w", part.field, err)
+			}
+			continue
 		}
-	}
-
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, "", fmt.Errorf("create upload file part: %w", err)
-	}
-	if _, err := part.Write(content); err != nil {
-		return nil, "", fmt.Errorf("write upload content: %w", err)
+		formFile, err := writer.CreateFormFile(part.field, part.filename)
+		if err != nil {
+			return nil, "", fmt.Errorf("create upload file part %q: %w", part.field, err)
+		}
+		if _, err := formFile.Write(part.value); err != nil {
+			return nil, "", fmt.Errorf("write upload content for %q: %w", part.field, err)
+		}
 	}
 	if err := writer.Close(); err != nil {
 		return nil, "", fmt.Errorf("finalize upload body: %w", err)

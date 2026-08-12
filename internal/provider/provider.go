@@ -195,6 +195,8 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 		NewFirewallRuleResource,
 		NewScheduledTaskResource,
 		NewEventTaskResource,
+		NewCertificateResource,
+		NewCertificateLetsEncryptResource,
 	}
 }
 
@@ -213,5 +215,6 @@ func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.Da
 		NewFirewallRuleDataSource,
 		NewScheduledTaskDataSource,
 		NewEventTaskDataSource,
+		NewCertificatesDataSource,
 	}
 }
