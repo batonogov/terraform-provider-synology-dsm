@@ -146,16 +146,15 @@ Every resource follows the same structure (see `resource_group.go` as the cleane
 
 ## Release Flow
 
-Automated via **Release Please + GoReleaser**:
+Automated via **Release Please + GoReleaser**, split across two workflows so each release PR carries only the delta since the last release (not the whole history):
 
 1. All commits to `main` must use **conventional commits** (`feat:`, `fix:`, `docs:`, `ci:`, `deps:`, `breaking:`)
-2. Release Please automatically creates/updates a release PR with changelog and version bump
-3. Merging the release PR creates a draft GitHub Release + git tag
-4. The same workflow imports the Registry GPG key, runs GoReleaser, and verifies the artifacts
-5. The workflow publishes the draft only after archives, manifest, checksums, and signature pass verification
+2. `release-please.yml` (workflow 1) opens/updates the release PR with the changelog and version bump. It runs on `push` to `main` (skipping the release merge commit itself) and `workflow_dispatch`, and only manages the PR — it never tags (`skip-github-release: true`)
+3. Merging the release PR triggers `release-publish.yml` (workflow 2) via `pull_request: closed` of a PR labelled `autorelease: tagged`. It tags the release and creates a draft GitHub Release (`skip-github-pull-request: true`), imports the Registry GPG key, runs GoReleaser, and verifies the artifacts
+4. After verification it publishes the draft (archives, manifest, checksums, and signature must pass), flips the PR label to `autorelease: published`, then re-runs workflow 1. Because the previous release is now `published`, the next release PR is computed as a delta
 
 ```
-conventional commits → Release Please PR → merge → draft release → signed artifacts → publish
+conventional commits → release PR → merge → tag + draft release → verified signed artifacts → publish → recompute next PR
 ```
 
 - **Never create tags manually** — Release Please manages versions
@@ -165,7 +164,8 @@ conventional commits → Release Please PR → merge → draft release → signe
 ## CI/CD
 
 - `.github/workflows/test.yml` — unit tests on push/PR
-- `.github/workflows/release-please.yml` — release PR automation plus signed, verified GoReleaser publication
+- `.github/workflows/release-please.yml` — opens/updates the release PR only (`skip-github-release`)
+- `.github/workflows/release-publish.yml` — tags, signs, verifies, and publishes a release on `pull_request: closed` of a tagged release PR, then recomputes the release PR
 - `.github/dependabot.yml` — weekly dependency updates (gomod + github-actions)
 
 ## Acceptance Test Environment

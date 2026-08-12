@@ -1,0 +1,148 @@
+name: Release Publish
+
+# Workflow 2 — tags a release and publishes verified artifacts. Triggered when a
+# release PR carrying the "autorelease: tagged" label is merged. It creates the tag
+# and draft release (skip-github-pull-request: true, so it never opens the next PR),
+# builds/signs/verifies the artifacts, flips the PR label to "autorelease:
+# published", then re-runs the release-please workflow so the next release PR is
+# computed against the now-published state — i.e. with a delta-only changelog.
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Tag Release
+    if: "${{ github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'autorelease: tagged') }}"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # Only tag/create the release. Opening the next release PR is the job
+          # of release-please.yml (workflow 1), recomputed after this release is
+          # published, so its changelog is a delta rather than the whole history.
+          skip-github-pull-request: true
+
+  goreleaser:
+    name: Build, Sign, and Publish Release
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Needed to move the release PR from "autorelease: tagged" to
+      # "autorelease: published" once the artifacts have verified, and to re-run
+      # the release-please workflow below.
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.release_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef515d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Ensure release tag
+        env:
+          RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+          remote_tag_sha="$(git ls-remote --refs origin "refs/tags/$TAG_NAME" | cut -f1)"
+          if [ -n "$remote_tag_sha" ]; then
+            test "$remote_tag_sha" = "$RELEASE_SHA"
+            git fetch --force origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+          else
+            git tag "$TAG_NAME" "$RELEASE_SHA"
+            git push origin "refs/tags/$TAG_NAME"
+          fi
+
+          test "$(git rev-list -n 1 "$TAG_NAME")" = "$RELEASE_SHA"
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7
+        id: import_gpg
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Build and sign release artifacts
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: v2.16.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+
+      - name: Verify release artifacts
+        env:
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: |
+          version=${TAG_NAME#v}
+          ./scripts/verify-release-artifacts.sh dist "$version"
+          gpg --batch --verify \
+            "dist/terraform-provider-synology-dsm_${version}_SHA256SUMS.sig" \
+            "dist/terraform-provider-synology-dsm_${version}_SHA256SUMS"
+
+      - name: Publish verified draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false --latest
+
+      # Release Please marks a release published itself — but only for releases it
+      # publishes. This workflow deliberately keeps them as drafts until the
+      # artifacts verify, so that step never runs and the release PR stays on
+      # "autorelease: tagged".
+      #
+      # That label is how Release Please finds the previous release when it computes
+      # the next one. Without it, the next release PR restates the whole history as
+      # its changelog: 0.2.0 listed every commit back to the first, including
+      # everything already shipped in 0.1.0 and 0.1.1.
+      - name: Mark the release PR published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
+        run: |
+          # The release commit is the squash-merge of the release PR, so the commit
+          # resolves back to the PR that produced it.
+          pr_number="$(gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" --jq '.[0].number')"
+          test -n "$pr_number"
+
+          gh pr edit "$pr_number" \
+            --add-label "autorelease: published" \
+            --remove-label "autorelease: tagged"
+
+      # The previous release is now labelled "autorelease: published", so re-running
+      # the release-please workflow computes the next release PR as a delta since
+      # this release rather than re-stating the whole history.
+      - name: Recompute release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run release-please.yml --ref main
