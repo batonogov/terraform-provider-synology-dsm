@@ -334,6 +334,25 @@ func TestClient_DeleteFile(t *testing.T) {
 	}
 }
 
+// TestClient_DeleteFile_IsNotRecursive pins down a safety property rather than
+// a DSM requirement: this client manages single files, so a delete must never
+// be able to empty a directory tree — which is what would happen if the path
+// pointed at a directory after an out-of-band change.
+func TestClient_DeleteFile_IsNotRecursive(t *testing.T) {
+	var recursive string
+	client, _ := newFileTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		recursive = r.URL.Query().Get("recursive")
+		writeFileAPIResponse(w, map[string]interface{}{})
+	})
+
+	if err := client.DeleteFile(context.Background(), "/containers/conf/s3.json"); err != nil {
+		t.Fatalf("DeleteFile failed: %v", err)
+	}
+	if recursive != "false" {
+		t.Errorf("recursive = %q, want false: a file resource must not delete directory trees", recursive)
+	}
+}
+
 func TestClient_DeleteFile_MissingFileIsReportedAsNotFound(t *testing.T) {
 	client, _ := newFileTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeFileAPIError(w, 408)

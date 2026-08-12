@@ -126,7 +126,12 @@ func (c *Client) DownloadFile(ctx context.Context, filePath string) ([]byte, err
 func (c *Client) DeleteFile(ctx context.Context, filePath string) error {
 	params := url.Values{}
 	params.Set("path", jsonStringArray(filePath))
-	params.Set("recursive", "true")
+	// Deliberately not recursive: this client manages single files, and a
+	// recursive delete would empty a whole directory tree if the path ever
+	// pointed at a directory — after someone replaced the file with one out of
+	// band, for instance. DSM does not need the flag to remove a plain file, so
+	// the only thing it could buy here is unintended data loss.
+	params.Set("recursive", "false")
 
 	if _, err := c.DoAPI(ctx, "SYNO.FileStation.Delete", "2", "delete", params); err != nil {
 		if IsAPIError(err, fileStationNoSuchFile) {
