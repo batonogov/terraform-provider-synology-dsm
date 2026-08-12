@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	pathpkg "path"
-	"regexp"
 	"strings"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
@@ -19,8 +18,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
-
-var dsmContainerProjectVolumePath = regexp.MustCompile(`^/volume[0-9]+(?:/|$)`)
 
 func NewContainerProjectResource() resource.Resource {
 	return &containerProjectResource{}
@@ -132,7 +129,7 @@ func (r *containerProjectResource) ValidateConfig(ctx context.Context, req resou
 				"Use a normalized directory inside a DSM shared folder, such as `/docker/s3-storage`. Do not use a volume path or a trailing slash.",
 			)
 		}
-		if dsmContainerProjectVolumePath.MatchString(clean) {
+		if dsmVolumePath.MatchString(clean) {
 			resp.Diagnostics.AddAttributeError(tfpath.Root("share_path"), "Volume path is not a File Station path", "Use `/docker/s3-storage`, not `/volume1/docker/s3-storage`.")
 		}
 	}

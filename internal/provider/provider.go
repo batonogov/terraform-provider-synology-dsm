@@ -38,7 +38,7 @@ func (p *synologyProvider) Metadata(_ context.Context, _ provider.MetadataReques
 
 func (p *synologyProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provider for managing Synology DSM packages, Container Manager projects, users, groups, shared folders, permissions, quotas, and user home service.",
+		Description: "Provider for managing Synology DSM packages, Container Manager projects, files in shared folders, users, groups, shared folders, permissions, quotas, and user home service.",
 		Attributes: map[string]schema.Attribute{
 			"host": schema.StringAttribute{
 				Required:    true,
@@ -130,6 +130,7 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 		NewUserHomeServiceResource,
 		NewPackageResource,
 		NewContainerProjectResource,
+		NewFileResource,
 	}
 }
 
