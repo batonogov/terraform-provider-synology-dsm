@@ -3,11 +3,13 @@
 page_title: "synology-dsm Provider"
 description: |-
   Provider for managing Synology DSM packages, Container Manager projects, files in shared folders, users, groups, shared folders, permissions, quotas, and user home service.
+  Provider for managing Synology DSM packages, Container Manager projects, reverse proxy entries, users, groups, shared folders, permissions, quotas, and user home service.
 ---
 
 # synology-dsm Provider
 
 Provider for managing Synology DSM packages, Container Manager projects, files in shared folders, users, groups, shared folders, permissions, quotas, and user home service.
+Provider for managing Synology DSM packages, Container Manager projects, reverse proxy entries, users, groups, shared folders, permissions, quotas, and user home service.
 
 The provider uses the Synology DSM web API and is developed against DSM 7.2.2
 and DSM 7.3.2. DSM 6.x and model-specific packages may behave differently.

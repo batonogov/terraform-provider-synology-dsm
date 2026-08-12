@@ -89,6 +89,13 @@ var apiSpecificErrors = map[string]map[int]string{
 		// accompanying message DSM renders ("Please sign in to DSM again") is
 		// misleading — the session is fine, the parameter set is incomplete.
 		5701: "DSM rejected the time settings as incomplete or malformed: SYNO.Core.Region.NTP set requires the full parameter set (timezone, enable_ntp and server together), not just the field being changed, and every value must be one DSM recognises",
+	// These two were verified against real DSM 7.x by third parties rather than
+	// by this project — 4151 by a published DSM 7.x probe of the API, 4154 by a
+	// production controller that handles it explicitly. Both are consistent
+	// across sources; see the source list at the top of reverse_proxy.go.
+	"SYNO.Core.AppPortal.ReverseProxy": {
+		4151: "the reverse proxy entry is missing or was not sent as a JSON-encoded string",
+		4154: "a reverse proxy entry with this description already exists",
 	},
 }
 
