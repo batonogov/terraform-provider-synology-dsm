@@ -24,12 +24,10 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_firewall_rule`](#dsm_firewall_rule) | Manage rules in a DSM firewall profile |
 | [`dsm_scheduled_task`](#dsm_scheduled_task) | Manage Task Scheduler script tasks (daily, weekly, monthly) |
 | [`dsm_event_task`](#dsm_event_task) | Manage tasks that run on boot or shutdown |
-
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects.
 | [`dsm_certificate`](#dsm_certificate) | Import an externally issued TLS certificate |
 | [`dsm_certificate_lets_encrypt`](#dsm_certificate_lets_encrypt) | Have DSM obtain a certificate from Let's Encrypt |
 
-Every resource except `dsm_file` and the two certificate resources has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`) for reading existing objects. Certificates are covered by the plural `dsm_certificates` data source, which lists them.
+Every resource except `dsm_file` and the two certificate resources has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects. Certificates are covered by the plural `dsm_certificates` data source, which lists them.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
