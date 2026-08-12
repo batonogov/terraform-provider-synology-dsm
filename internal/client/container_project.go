@@ -293,6 +293,11 @@ func (c *Client) updateContainerProjectCompose(ctx context.Context, id, composeY
 	return nil
 }
 
+// maxProjectDiagnosticLines bounds how much streamed output is attached to an
+// error. A failing build ends with the reason; the pull progress before it is
+// noise in a Terraform diagnostic.
+const maxProjectDiagnosticLines = 12
+
 func (c *Client) runContainerProjectAction(ctx context.Context, id, action string) error {
 	params := url.Values{}
 	params.Set("id", id)
@@ -302,50 +307,99 @@ func (c *Client) runContainerProjectAction(ctx context.Context, id, action strin
 		// POST methods, so use those first and fall back only when DSM says the
 		// method does not exist.
 		if IsAPIError(err, 103) {
-			if streamErr := c.streamContainerProjectAction(ctx, id, action+"_stream"); streamErr == nil {
+			output, streamErr := c.streamContainerProjectAction(ctx, id, action+"_stream")
+			if streamErr == nil {
 				return nil
-			} else {
-				return fmt.Errorf("%s Container Manager project %q: direct method: %v; streaming method: %w", action, id, err, streamErr)
 			}
+			return fmt.Errorf("%s Container Manager project %q: direct method: %v; streaming method: %w%s",
+				action, id, err, streamErr, formatProjectDiagnostics(output))
+		}
+
+		// The direct methods answer a failed build with a bare code — 2202 for a
+		// build that could not start its containers — while Container Manager's
+		// own explanation is only available through the streaming variant. Ask for
+		// it, so the diagnostic names the actual problem instead of a number.
+		if detail := c.diagnoseContainerProjectAction(ctx, id, action); detail != "" {
+			return fmt.Errorf("%s Container Manager project %q: %w%s", action, id, err, detail)
 		}
 		return fmt.Errorf("%s Container Manager project %q: %w", action, id, err)
 	}
 	return nil
 }
 
-func (c *Client) streamContainerProjectAction(ctx context.Context, id, method string) error {
+// diagnoseContainerProjectAction re-runs a failed action through its streaming
+// variant purely to collect DSM's explanation, and returns it preformatted for
+// an error message (empty if nothing useful came back).
+//
+// This does repeat the action. For the failures it is meant to explain that is
+// harmless — a build that failed on a missing bind mount fails the same way
+// again, which is precisely what makes the output reproducible — and the cost is
+// paid only on a path that is already an error. Actions with nothing to explain
+// are left alone.
+func (c *Client) diagnoseContainerProjectAction(ctx context.Context, id, action string) string {
+	switch action {
+	case "build", "start":
+	default:
+		return ""
+	}
+
+	output, _ := c.streamContainerProjectAction(ctx, id, action+"_stream")
+	return formatProjectDiagnostics(output)
+}
+
+// formatProjectDiagnostics renders the tail of a streamed action for inclusion
+// in an error message.
+func formatProjectDiagnostics(output []string) string {
+	if len(output) == 0 {
+		return ""
+	}
+	if len(output) > maxProjectDiagnosticLines {
+		output = output[len(output)-maxProjectDiagnosticLines:]
+	}
+	return "\n\nContainer Manager reported:\n  " + strings.Join(output, "\n  ")
+}
+
+func (c *Client) streamContainerProjectAction(ctx context.Context, id, method string) ([]string, error) {
 	for attempt := range 2 {
 		params := c.buildParams("SYNO.Docker.Project", "1", method, url.Values{"id": []string{jsonString(id)}})
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/webapi/entry.cgi?"+params.Encode(), nil)
 		if err != nil {
-			return fmt.Errorf("create streaming request: %w", err)
+			return nil, fmt.Errorf("create streaming request: %w", err)
 		}
 
 		streamClient := *c.httpClient
 		streamClient.Timeout = containerProjectTaskTimeout
 		response, err := streamClient.Do(req)
 		if err != nil {
-			return fmt.Errorf("streaming HTTP request: %w", err)
+			return nil, fmt.Errorf("streaming HTTP request: %w", err)
 		}
-		streamErr := readContainerProjectActionStream(response)
+		output, streamErr := readContainerProjectActionStream(response)
 		if closeErr := response.Body.Close(); streamErr == nil && closeErr != nil {
 			streamErr = closeErr
 		}
 		if isSessionExpiredError(streamErr) && attempt == 0 {
 			if err := c.relogin(ctx); err != nil {
-				return fmt.Errorf("re-login before streaming retry: %w", err)
+				return nil, fmt.Errorf("re-login before streaming retry: %w", err)
 			}
 			continue
 		}
-		return streamErr
+		return output, streamErr
 	}
-	return errors.New("streaming project action exhausted retries")
+	return nil, errors.New("streaming project action exhausted retries")
 }
 
-func readContainerProjectActionStream(response *http.Response) error {
+// readContainerProjectActionStream consumes a streamed lifecycle response and
+// returns both the plain-text lines DSM emitted and the failure, if any.
+//
+// The text lines are the whole point of the streaming variant: they carry
+// Container Manager's own diagnosis ("Bind mount failed: '/volume1/...' does not
+// exist"), which the non-streaming methods reduce to a bare code such as 2202.
+func readContainerProjectActionStream(response *http.Response) ([]string, error) {
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected streaming status %d", response.StatusCode)
+		return nil, fmt.Errorf("unexpected streaming status %d", response.StatusCode)
 	}
+
+	var output []string
 
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -359,19 +413,25 @@ func readContainerProjectActionStream(response *http.Response) error {
 			Success *bool     `json:"success"`
 			Error   *APIError `json:"error,omitempty"`
 		}
-		if err := json.Unmarshal([]byte(line), &envelope); err != nil || envelope.Success == nil || *envelope.Success {
+		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
+			// Not an envelope at all: this is the build output itself, which is
+			// exactly what the caller needs to explain a failure.
+			output = append(output, line)
+			continue
+		}
+		if envelope.Success == nil || *envelope.Success {
 			continue
 		}
 		if envelope.Error != nil {
 			envelope.Error.API = "SYNO.Docker.Project"
-			return envelope.Error
+			return output, envelope.Error
 		}
-		return errors.New("streaming API returned success=false with no error details")
+		return output, errors.New("streaming API returned success=false with no error details")
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read streaming response: %w", err)
+		return output, fmt.Errorf("read streaming response: %w", err)
 	}
-	return nil
+	return output, nil
 }
 
 func (c *Client) waitForContainerProjectRunningState(ctx context.Context, id string, running bool) (*ContainerProject, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -334,7 +335,7 @@ func TestReadContainerProjectActionStream_ReturnsAPIError(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader("data: {\"success\":false,\"error\":{\"code\":105}}\n")),
 	}
-	err := readContainerProjectActionStream(response)
+	_, err := readContainerProjectActionStream(response)
 	if !IsAPIError(err, 105) {
 		t.Fatalf("expected streamed API error 105, got %v", err)
 	}
@@ -396,5 +397,60 @@ func shrinkContainerProjectPolling(t *testing.T) func() {
 	return func() {
 		containerProjectPollInterval = originalInterval
 		containerProjectTaskTimeout = originalTimeout
+	}
+}
+
+// TestReadContainerProjectActionStream_CollectsOutput covers #67: the plain-text
+// lines are Container Manager's own diagnosis, and dropping them is what left
+// users with a bare "unexpected DSM error (code 2202)".
+func TestReadContainerProjectActionStream_CollectsOutput(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"success":true}`,
+		` Container edge-caddy-config-1  Starting`,
+		`Error response from daemon: Bind mount failed: '/volume1/containers/edge/conf' does not exist`,
+		`Exit Code: 1`,
+		`data: {"success":false,"error":{"code":2202}}`,
+	}, "\n")
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	output, err := readContainerProjectActionStream(response)
+	if !IsAPIError(err, 2202) {
+		t.Fatalf("expected the streamed 2202, got %v", err)
+	}
+	if len(output) != 3 {
+		t.Fatalf("expected the three text lines, got %d: %v", len(output), output)
+	}
+	if !strings.Contains(strings.Join(output, "\n"), "Bind mount failed") {
+		t.Errorf("the actual reason must survive: %v", output)
+	}
+}
+
+// TestFormatProjectDiagnostics_KeepsTheTail: a failing build ends with the
+// reason, so the tail is what matters; the image-pull progress before it would
+// bury the diagnostic.
+func TestFormatProjectDiagnostics_KeepsTheTail(t *testing.T) {
+	if got := formatProjectDiagnostics(nil); got != "" {
+		t.Errorf("no output should add nothing to the error, got %q", got)
+	}
+
+	lines := make([]string, 0, maxProjectDiagnosticLines+5)
+	for i := range maxProjectDiagnosticLines + 5 {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	lines[len(lines)-1] = "Exit Code: 1"
+
+	got := formatProjectDiagnostics(lines)
+	if !strings.Contains(got, "Exit Code: 1") {
+		t.Errorf("the last line must be kept: %s", got)
+	}
+	if strings.Contains(got, "line 0") {
+		t.Errorf("the oldest lines should be dropped: %s", got)
+	}
+	if n := strings.Count(got, "\n  "); n != maxProjectDiagnosticLines {
+		t.Errorf("expected %d retained lines, got %d", maxProjectDiagnosticLines, n)
 	}
 }

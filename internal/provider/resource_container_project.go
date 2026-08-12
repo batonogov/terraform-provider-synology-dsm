@@ -74,7 +74,12 @@ func (r *containerProjectResource) Schema(_ context.Context, _ resource.SchemaRe
 				Required:  true,
 				Sensitive: true,
 				Description: "Docker Compose YAML managed by Container Manager. Sensitive output is redacted, but the value is still stored in Terraform state; " +
-					"use an encrypted remote state backend and avoid embedding long-lived secrets.",
+					"use an encrypted remote state backend and avoid embedding long-lived secrets.\n\n" +
+					"**Relative bind mounts do not work the way plain Docker leads you to expect.** A mount such as " +
+					"`./conf:/conf` fails the build with `Bind mount failed: '/volume1/.../conf' does not exist`, because " +
+					"Container Manager does not create host directories. Use a named volume, point the mount at a path " +
+					"that already exists, or create the file with `dsm_file` first — which also keeps configuration and " +
+					"secrets out of the compose document.",
 			},
 			"running": schema.BoolAttribute{
 				Optional:    true,
