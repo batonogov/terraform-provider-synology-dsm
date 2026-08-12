@@ -1,6 +1,6 @@
 # terraform-provider-synology-dsm
 
-A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, users, groups, shared folders, permissions, quotas, and per-user home folders.
+A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, files in shared folders, users, groups, shared folders, permissions, quotas, and per-user home folders.
 
 Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.API.Auth` v7 with SynoToken). Developed and tested against DSM 7.2.2 and DSM 7.3.2.
 
@@ -16,8 +16,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_user_home_service`](#dsm_user_home_service) | Enable per-user home folders (the `homes` shared folder) |
 | [`dsm_package`](#dsm_package) | Install and control Package Center packages |
 | [`dsm_container_project`](#dsm_container_project) | Manage Docker Compose projects in Container Manager |
+| [`dsm_file`](#dsm_file) | Upload configuration files into a shared folder |
 
-Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
@@ -459,6 +460,70 @@ terraform import dsm_container_project.s3_storage s3-storage
 > **Requires physical hardware.** Container Manager is model-specific and is
 > unavailable on Virtual DSM. Declare the `dsm_package.container_manager`
 > dependency explicitly so the package is running before project creation.
+
+### `dsm_file`
+
+Uploads a file into a shared folder through File Station. This is what keeps
+configuration out of `compose_yaml`: an S3 credentials file, a `Caddyfile`, or a
+`config.toml` becomes a plain file on disk instead of a `printf` in a throwaway
+`busybox` service — and no `$` has to be escaped for Compose interpolation.
+
+| Attribute        | Type   | Required | Computed | Description                                                                 |
+|------------------|--------|----------|----------|-----------------------------------------------------------------------------|
+| `id`             | string | -        | yes      | Absolute File Station path of the file                                      |
+| `share_path`     | string | yes      | -        | File Station directory, e.g. `/containers/seaweedfs/conf`. Forces replacement. |
+| `name`           | string | yes      | -        | File name inside `share_path`. Forces replacement.                          |
+| `content`        | string | -        | -        | UTF-8 content (sensitive). Conflicts with `content_base64`.                 |
+| `content_base64` | string | -        | -        | Base64 content for binary files (sensitive). Conflicts with `content`.      |
+| `checksum`       | string | -        | yes      | SHA-256 of the content stored on DSM                                        |
+| `size`           | number | -        | yes      | File size in bytes                                                          |
+
+```hcl
+resource "dsm_shared_folder" "containers" {
+  name     = "containers"
+  vol_path = "/volume1"
+}
+
+resource "dsm_file" "s3_identities" {
+  share_path = "/${dsm_shared_folder.containers.name}/seaweedfs/conf"
+  name       = "s3.json"
+
+  content = jsonencode({
+    identities = [{
+      name        = "nextcloud"
+      credentials = [{ accessKey = var.s3_access_key, secretKey = var.s3_secret_key }]
+      actions     = ["Read", "Write", "List"]
+    }]
+  })
+}
+
+resource "dsm_file" "keystore" {
+  share_path     = "/${dsm_shared_folder.containers.name}/caddy/conf"
+  name           = "keystore.p12"
+  content_base64 = filebase64("${path.module}/keystore.p12")
+}
+```
+
+```bash
+terraform import dsm_file.s3_identities /containers/seaweedfs/conf/s3.json
+```
+
+> **`share_path` is a File Station path.** Use `/containers/seaweedfs/conf`, not
+> `/volume1/containers/seaweedfs/conf`. Missing subdirectories are created; the
+> shared folder itself must already exist (declare a `dsm_shared_folder` for it).
+
+> **Drift is detected by reading the file back.** Every refresh downloads the
+> file and recomputes `checksum`, so an edit made outside Terraform shows up as a
+> plan. Because the content therefore lives in state, this resource is meant for
+> configuration-sized files; anything above 16 MiB is refused.
+
+> **Sensitive is not encrypted state.** `content` and `content_base64` are
+> redacted in UI output but stored in state — use an encrypted remote state
+> backend for credentials files.
+
+> **POSIX permissions are not managed.** File Station exposes no API for a file
+> mode, so there is no `mode` attribute; files are created with the DSM defaults
+> of the destination shared folder.
 
 ## Data sources
 

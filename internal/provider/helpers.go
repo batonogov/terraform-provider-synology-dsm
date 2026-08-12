@@ -1,6 +1,15 @@
 package provider
 
-import "github.com/hashicorp/terraform-plugin-framework/types"
+import (
+	"regexp"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+// dsmVolumePath matches an absolute volume path such as /volume1/docker. File
+// Station APIs address the same directory as /docker, so a volume path in a
+// share_path is always a mistake worth catching at plan time.
+var dsmVolumePath = regexp.MustCompile(`^/volume[0-9]+(?:/|$)`)
 
 // nullableString returns a null string when the value is empty, otherwise a
 // string value. This normalizes the "" vs null mismatch for optional string
