@@ -131,6 +131,7 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 		NewPackageResource,
 		NewContainerProjectResource,
 		NewFileResource,
+		NewSystemSettingsResource,
 	}
 }
 
@@ -144,5 +145,6 @@ func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.Da
 		NewUserHomeServiceDataSource,
 		NewPackageDataSource,
 		NewContainerProjectDataSource,
+		NewSystemSettingsDataSource,
 	}
 }

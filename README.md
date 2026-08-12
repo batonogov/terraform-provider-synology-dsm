@@ -17,8 +17,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_package`](#dsm_package) | Install and control Package Center packages |
 | [`dsm_container_project`](#dsm_container_project) | Manage Docker Compose projects in Container Manager |
 | [`dsm_file`](#dsm_file) | Upload configuration files into a shared folder |
+| [`dsm_system_settings`](#dsm_system_settings) | Manage the NAS time zone and NTP synchronisation |
 
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
@@ -501,6 +502,38 @@ resource "dsm_file" "keystore" {
   share_path     = "/${dsm_shared_folder.containers.name}/caddy/conf"
   name           = "keystore.p12"
   content_base64 = filebase64("${path.module}/keystore.p12")
+### `dsm_system_settings`
+
+Manages the NAS date and time configuration — Control Panel → Regional Options →
+Time. A wrong clock is not a cosmetic problem: it desynchronises logs from the
+containers running on the same box, breaks certificate validation, and shifts
+every scheduled task.
+
+These are NAS-wide settings, so declare **at most one** instance of this resource
+per DSM host.
+
+| Attribute     | Type   | Required | Computed | Description                                                     |
+|---------------|--------|----------|----------|-----------------------------------------------------------------|
+| `id`          | string | -        | yes      | Always `system_settings`                                        |
+| `timezone`    | string | -        | yes      | DSM time zone name, e.g. `Moscow`. Synology's own naming        |
+| `ntp_enabled` | bool   | -        | yes      | Whether the clock is synchronised with an NTP server            |
+| `ntp_server`  | string | -        | yes      | NTP server, e.g. `time.google.com`                              |
+
+Every attribute is optional. One left out of the configuration keeps whatever DSM
+currently has and is recorded in state, so it does not turn into a perpetual
+diff — which makes it possible to pin only the time zone and leave the NTP
+configuration to whoever set it up.
+
+```hcl
+resource "dsm_system_settings" "this" {
+  timezone    = "Moscow"
+  ntp_enabled = true
+  ntp_server  = "time.google.com"
+}
+
+# Or manage the time zone alone and leave NTP untouched.
+resource "dsm_system_settings" "timezone_only" {
+  timezone = "Amsterdam"
 }
 ```
 
@@ -524,6 +557,29 @@ terraform import dsm_file.s3_identities /containers/seaweedfs/conf/s3.json
 > **POSIX permissions are not managed.** File Station exposes no API for a file
 > mode, so there is no `mode` attribute; files are created with the DSM defaults
 > of the destination shared folder.
+terraform import dsm_system_settings.this system_settings
+```
+
+> **Time zones use Synology's names, not IANA identifiers.** DSM expects
+> `Moscow`, not `Europe/Moscow`; the spelling is the one shown in Control Panel →
+> Regional Options → Time. An unknown name is rejected with error 5701, and the
+> provider then suggests the likely DSM equivalent in the diagnostic.
+
+> **Destroy is always a no-op.** There is no meaningful value to reset a time
+> zone or NTP server to, so removing the resource only drops it from state and
+> leaves the NAS clock configuration alone.
+
+> **DSM rejects partial writes.** `SYNO.Core.Region.NTP` answers error 5701 to a
+> `set` that carries only the field being changed, so the provider reads the
+> current settings and writes the complete set back — `timezone`, `enable_ntp`
+> and `server`, and deliberately *not* the clock readings `get` returns
+> alongside them, since sending those is DSM's "set the time manually" path.
+> This API is undocumented and the exact contract is inferred, so the write path
+> is gated in acceptance tests behind `DSM_ACC_SYSTEM_SETTINGS=1`.
+
+> **Writes may require the built-in `admin` account.** `SYNO.Core.Region.NTP` has
+> been reported to answer error 119 for other administrator accounts, the same
+> restriction as `dsm_user_home_service`.
 
 ## Data sources
 
@@ -540,6 +596,7 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_user_home_service`  | — (singleton)                                      | `id`, `enable`, `location`, `enable_recycle_bin`, `enable_domain`, `enable_ldap`, `encryption`, `personal_photo_enable` |
 | `dsm_package`            | `name`                                             | `id`, `display_name`, `version`, `status`, `running`, `description`, `maintainer`, `can_uninstall` |
 | `dsm_container_project`  | `name`                                             | `id`, `share_path`, `compose_yaml`, `running`, `path`, `status`, `container_ids` |
+| `dsm_system_settings`    | — (singleton)                                      | `id`, `timezone`, `ntp_enabled`, `ntp_server`, `current_date`, `current_time`, `timestamp` |
 
 ## Development
 

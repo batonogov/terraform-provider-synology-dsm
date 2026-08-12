@@ -53,6 +53,25 @@ func TestAccPreCheckContainerProject(t *testing.T) {
 	}
 }
 
+// TestAccPreCheckSystemSettings gates the tests that WRITE the NAS date and
+// time settings. Two reasons to make this opt-in:
+//
+//   - the SYNO.Core.Region.NTP `set` parameter set is inferred, not documented;
+//     a firmware that wants a different shape answers 5701 and would otherwise
+//     break the whole suite rather than one test;
+//   - changing the time zone or NTP server of a NAS is disruptive to anything
+//     else running on it, so it should never happen because someone ran the
+//     default test target.
+//
+// Set DSM_ACC_SYSTEM_SETTINGS=1 to opt in. Reading the settings is safe and is
+// not gated.
+func TestAccPreCheckSystemSettings(t *testing.T) {
+	TestAccPreCheck(t)
+	if os.Getenv("DSM_ACC_SYSTEM_SETTINGS") != "1" {
+		t.Skip("skipping system settings write test: it changes the NAS clock configuration and the SYNO.Core.Region.NTP set contract is unverified; set DSM_ACC_SYSTEM_SETTINGS=1 to opt in")
+	}
+}
+
 // NewTestClient builds a logged-in DSM client from the acceptance-test
 // environment. Use it in CheckDestroy hooks that need to inspect DSM directly,
 // beyond what the Terraform state can tell.

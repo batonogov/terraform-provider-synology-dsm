@@ -77,6 +77,13 @@ var apiSpecificErrors = map[string]map[int]string{
 		3101: "invalid home location: it must be a volume path such as /volume1, not a bare volume name",
 		3103: "the location parameter is required whenever the home service is enabled",
 	},
+	"SYNO.Core.Region.NTP": {
+		// Confirmed on DSM 7.4-90075 (issue #57): a `set` carrying only
+		// `timezone` is answered with 5701 and desc "parameter bad". The
+		// accompanying message DSM renders ("Please sign in to DSM again") is
+		// misleading — the session is fine, the parameter set is incomplete.
+		5701: "DSM rejected the time settings as incomplete or malformed: SYNO.Core.Region.NTP set requires the full parameter set (timezone, enable_ntp and server together), not just the field being changed, and every value must be one DSM recognises",
+	},
 }
 
 // describeAPIError resolves a code to a sentence, preferring the API-specific
