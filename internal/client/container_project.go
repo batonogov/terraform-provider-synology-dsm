@@ -33,8 +33,37 @@ type ContainerProject struct {
 	ContainerIDs []string
 }
 
+// Running reports whether the project counts as up.
+//
+// WARNING counts. Container Manager reports it when some containers are not
+// running while others are — which is the steady state of any compose file with
+// a one-shot init container: the init container writes its config, exits 0, and
+// never runs again while the long-lived services carry on. That pattern is the
+// documented Compose idiom for setup work, so treating WARNING as "not yet
+// running" meant waiting the full ten-minute timeout for a state that had
+// already settled, and failing an apply whose services were running fine
+// (issue #69).
+//
+// The cost is that a genuinely broken container also leaves the project in
+// WARNING and no longer fails the apply. That is reported instead: the resource
+// raises a Terraform warning naming the status, and `status` is in state for
+// anyone who wants to assert on it.
 func (p ContainerProject) Running() bool {
-	return strings.EqualFold(p.Status, "running")
+	switch strings.ToUpper(p.Status) {
+	case "RUNNING", statusWarning:
+		return true
+	default:
+		return false
+	}
+}
+
+// statusWarning is DSM's "some containers are up, some are not" status.
+const statusWarning = "WARNING"
+
+// PartiallyRunning reports whether the project is up but not every container is
+// running — the case worth telling the user about.
+func (p ContainerProject) PartiallyRunning() bool {
+	return strings.EqualFold(p.Status, statusWarning)
 }
 
 // ListContainerProjects returns all projects known to Container Manager. DSM
