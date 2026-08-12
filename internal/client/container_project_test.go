@@ -524,3 +524,74 @@ func TestWaitForContainerProject_SettlesOnWarning(t *testing.T) {
 		t.Errorf("expected the wait to stop as soon as the status settled, polled %d times", got)
 	}
 }
+
+// TestUpdateContainerProjectCompose_RecoversFromLateResponse is the core of #70:
+// DSM finished the write and answered too late. Treating that as a failure left
+// the project on the NAS but out of state, and every later apply then failed
+// with "already exists; import it instead".
+func TestUpdateContainerProjectCompose_RecoversFromLateResponse(t *testing.T) {
+	const compose = "services:\n  app:\n    image: nginx\n"
+	var updates atomic.Int32
+
+	client, server := newContainerProjectTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, method := containerProjectRequest(r)
+		switch method {
+		case "update":
+			// Answer far too late: the client gives up while DSM completes the write.
+			updates.Add(1)
+			time.Sleep(150 * time.Millisecond)
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case "get":
+			// The write did land, which is exactly the situation being recovered.
+			stored := ""
+			if updates.Load() > 0 {
+				stored = compose
+			}
+			writeContainerProjectResponse(w, map[string]interface{}{
+				"id": "project-uuid", "name": "app", "share_path": "/docker/app",
+				"path": "/volume1/docker/app", "status": "STOPPED", "content": stored,
+			})
+		default:
+			t.Fatalf("unexpected method %q", method)
+		}
+	})
+	defer server.Close()
+
+	client.slowClient.Timeout = 30 * time.Millisecond
+
+	if err := client.updateContainerProjectCompose(context.Background(), "project-uuid", compose); err != nil {
+		t.Fatalf("a late response with the write completed must not fail: %v", err)
+	}
+}
+
+// TestUpdateContainerProjectCompose_TimeoutWithoutWriteStillFails guards the
+// other direction: recovery must confirm the content, not assume it.
+func TestUpdateContainerProjectCompose_TimeoutWithoutWriteStillFails(t *testing.T) {
+	client, server := newContainerProjectTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, method := containerProjectRequest(r)
+		switch method {
+		case "update":
+			time.Sleep(150 * time.Millisecond)
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case "get":
+			// DSM still holds the old compose: the write really did not happen.
+			writeContainerProjectResponse(w, map[string]interface{}{
+				"id": "project-uuid", "name": "app", "share_path": "/docker/app",
+				"path": "/volume1/docker/app", "status": "STOPPED", "content": "services: {}\n",
+			})
+		default:
+			t.Fatalf("unexpected method %q", method)
+		}
+	})
+	defer server.Close()
+
+	client.slowClient.Timeout = 30 * time.Millisecond
+
+	err := client.updateContainerProjectCompose(context.Background(), "project-uuid", "services:\n  app:\n    image: nginx\n")
+	if err == nil {
+		t.Fatal("a timeout with no write must still fail")
+	}
+	if !IsTimeoutError(err) {
+		t.Errorf("the timeout should survive as the cause, got: %v", err)
+	}
+}

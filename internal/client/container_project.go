@@ -171,8 +171,16 @@ func (c *Client) CreateContainerProject(ctx context.Context, name, sharePath, co
 	params.Set("service_portal_name", jsonString(""))
 	params.Set("service_portal_port", "0")
 	params.Set("service_portal_protocol", jsonString(""))
-	if _, err := c.DoAPIPost(ctx, "SYNO.Docker.Project", "1", "create", params); err != nil {
-		return nil, fmt.Errorf("create Container Manager project %q: %w", name, err)
+	if _, err := c.DoAPIPost(WithSlowCall(ctx), "SYNO.Docker.Project", "1", "create", params); err != nil {
+		// As with the compose write, a timeout here means "no answer", not "no
+		// project": DSM may have created it and simply replied late. Look before
+		// giving up, or the next apply inherits an orphan it has to import by hand.
+		if !IsTimeoutError(err) {
+			return nil, fmt.Errorf("create Container Manager project %q: %w", name, err)
+		}
+		if _, found := c.findContainerProjectByName(ctx, name); found != nil {
+			return nil, fmt.Errorf("create Container Manager project %q: %w", name, err)
+		}
 	}
 
 	project, err := c.findContainerProjectByName(ctx, name)
@@ -316,10 +324,23 @@ func (c *Client) updateContainerProjectCompose(ctx context.Context, id, composeY
 	params := url.Values{}
 	params.Set("id", id)
 	params.Set("content", composeYAML)
-	if _, err := c.DoAPIPost(ctx, "SYNO.Docker.Project", "1", "update", params); err != nil {
-		return fmt.Errorf("update compose content for Container Manager project %q: %w", id, err)
+
+	_, err := c.DoAPIPost(WithSlowCall(ctx), "SYNO.Docker.Project", "1", "update", params)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// A late response is not a failed write. DSM blocks this call while Container
+	// Manager settles, and on a busy NAS the answer can arrive after the client
+	// gave up — with the compose file already written. Treating that as an error
+	// left a project on the NAS but not in state, and every later apply then hit
+	// "already exists; import it instead" (issue #70).
+	if IsTimeoutError(err) {
+		if project, getErr := c.GetContainerProject(ctx, id); getErr == nil && project.ComposeYAML == composeYAML {
+			return nil
+		}
+	}
+	return fmt.Errorf("update compose content for Container Manager project %q: %w", id, err)
 }
 
 // maxProjectDiagnosticLines bounds how much streamed output is attached to an
