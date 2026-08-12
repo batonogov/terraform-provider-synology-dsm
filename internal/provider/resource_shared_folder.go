@@ -39,6 +39,7 @@ type sharedFolderResourceModel struct {
 	EnableShareCow      types.Bool   `tfsdk:"enable_share_cow"`
 	ShareQuota          types.Int64  `tfsdk:"share_quota"`
 	UUID                types.String `tfsdk:"uuid"`
+	AdoptExisting       types.Bool   `tfsdk:"adopt_existing"`
 }
 
 func (r *sharedFolderResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -133,6 +134,19 @@ func (r *sharedFolderResource) Schema(_ context.Context, _ resource.SchemaReques
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"adopt_existing": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Take over a shared folder that already exists instead of failing with DSM error 3301. " +
+					"Defaults to `false`. Shares outlive Terraform — one may have been created by hand, left behind " +
+					"by a partially failed apply, or created by DSM itself (Container Manager creates `docker`) — and " +
+					"adopting one puts it under full Terraform management, so a later `terraform destroy` deletes it " +
+					"**and everything in it**. That is why this is opt-in rather than the default, unlike " +
+					"`dsm_package`, where adoption cannot destroy data. On adoption the configured settings are " +
+					"applied to the existing folder, so state matches the configuration rather than silently drifting. " +
+					"The volume must match: DSM cannot move a shared folder between volumes.",
+			},
 		},
 	}
 }
@@ -165,7 +179,12 @@ func (r *sharedFolderResource) Create(ctx context.Context, req resource.CreateRe
 		"name": plan.Name.ValueString(),
 	})
 
-	share, err := r.client.CreateShare(ctx, shareRequestFromPlan(plan, plan.Name.ValueString(), plan.VolPath.ValueString()))
+	createReq := shareRequestFromPlan(plan, plan.Name.ValueString(), plan.VolPath.ValueString())
+
+	share, err := r.client.CreateShare(ctx, createReq)
+	if err != nil && client.IsAPIError(err, shareAlreadyExistsCode) && plan.AdoptExisting.ValueBool() {
+		share, err = adoptExistingShare(ctx, r.client, createReq)
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to create shared folder",
@@ -179,14 +198,55 @@ func (r *sharedFolderResource) Create(ctx context.Context, req resource.CreateRe
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
+// shareAlreadyExistsCode is DSM's answer when a share of that name is already
+// on the NAS. It is the signal adoption keys off.
+const shareAlreadyExistsCode = 3301
+
+// adoptExistingShare brings a shared folder that DSM already has under
+// Terraform management, for the `docker` share Container Manager creates, a
+// folder made by hand before the configuration existed, or one left behind by a
+// half-finished apply.
+//
+// The configured settings are applied to it rather than merely recorded: an
+// adopted folder whose settings were left alone would report a state the
+// configuration never asked for, and every subsequent plan would show a diff.
+//
+// The volume is checked first because DSM cannot move a shared folder between
+// volumes. Adopting one on the wrong volume would produce a resource whose
+// vol_path can never be satisfied — and vol_path forces replacement, so the
+// next apply would offer to destroy the folder to "fix" it.
+func adoptExistingShare(ctx context.Context, c *client.Client, req client.CreateShareRequest) (*client.Share, error) {
+	existing, err := c.GetShare(ctx, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("adopt existing shared folder %q: %w", req.Name, err)
+	}
+
+	if existing.VolPath != req.VolPath {
+		return nil, fmt.Errorf(
+			"shared folder %q already exists on %s, but the configuration puts it on %s; "+
+				"DSM cannot move a shared folder between volumes, so it cannot be adopted",
+			req.Name, existing.VolPath, req.VolPath)
+	}
+
+	share, err := c.UpdateShare(ctx, req.Name, req)
+	if err != nil {
+		return nil, fmt.Errorf("apply configuration to adopted shared folder %q: %w", req.Name, err)
+	}
+	return share, nil
+}
+
 // sharedFolderErrorDetail turns a share API failure into something the reader
 // can act on. The client already renders the code as a sentence; what it cannot
 // know is the Terraform-level remedy, which is what gets appended here.
 func sharedFolderErrorDetail(err error, name string) string {
 	message := err.Error()
 	switch {
-	case client.IsAPIError(err, 3301):
-		return message + fmt.Sprintf("\n\nImport it instead of creating it:\n  terraform import dsm_shared_folder.%s %s",
+	case client.IsAPIError(err, shareAlreadyExistsCode):
+		return message + fmt.Sprintf(
+			"\n\nImport it instead of creating it:\n  terraform import dsm_shared_folder.%s %s"+
+				"\n\nOr set `adopt_existing = true` to let Terraform take over the existing folder and apply this "+
+				"configuration to it. Note that an adopted folder is fully managed afterwards, so `terraform destroy` "+
+				"will delete it and its contents.",
 			terraformIdentifier(name), name)
 	case client.IsAPIError(err, 105):
 		return message + "\n\nShared folder operations require an administrator account."
@@ -324,6 +384,13 @@ func (r *sharedFolderResource) Read(ctx context.Context, req resource.ReadReques
 	state.Description = nullableString(share.Description)
 	state.VolPath = types.StringValue(share.VolPath)
 	applyShareToPlan(&state, share)
+
+	// adopt_existing steers this provider's behaviour at create time and has no
+	// counterpart in DSM, so it is carried over from prior state. After an import
+	// there is no prior state, hence the explicit default.
+	if state.AdoptExisting.IsNull() {
+		state.AdoptExisting = types.BoolValue(false)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
