@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,6 +19,12 @@ import (
 
 const (
 	defaultHTTPTimeout = 30 * time.Second
+	// defaultSlowTimeout covers lifecycle calls that block while DSM works:
+	// SYNO.Docker.Project.update returns only once Container Manager has settled,
+	// which on a NAS busy pulling images outlasts a read timeout several times
+	// over. A late response was being treated as a failure while DSM had in fact
+	// completed the write (issue #70).
+	defaultSlowTimeout = 5 * time.Minute
 	maxRetries         = 3
 	retryBaseDelay     = 500 * time.Millisecond
 )
@@ -30,6 +37,9 @@ type APIResponse struct {
 
 type Client struct {
 	httpClient *http.Client
+	// slowClient carries the same transport with a longer timeout, for calls
+	// whose duration is bounded by DSM's own work rather than by the network.
+	slowClient *http.Client
 	baseURL    string
 	username   string
 	password   string
@@ -93,16 +103,38 @@ type Client struct {
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {
+	return NewClientWithTimeout(host, username, password, insecureTLS, defaultHTTPTimeout)
+}
+
+// NewClientWithTimeout builds a client whose ordinary requests use the given
+// timeout. Zero means the default.
+//
+// Lifecycle calls do not use it: creating a Container Manager project or writing
+// a compose file blocks while DSM settles, which on a busy NAS routinely outlasts
+// any timeout appropriate for a read. Those go through slowClient instead.
+func NewClientWithTimeout(host, username, password string, insecureTLS bool, timeout time.Duration) *Client {
 	transport := &http.Transport{}
 	if insecureTLS {
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
 		}
 	}
+	if timeout <= 0 {
+		timeout = defaultHTTPTimeout
+	}
+
+	slowTimeout := timeout
+	if slowTimeout < defaultSlowTimeout {
+		slowTimeout = defaultSlowTimeout
+	}
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout:   defaultHTTPTimeout,
+			Timeout:   timeout,
+			Transport: transport,
+		},
+		slowClient: &http.Client{
+			Timeout:   slowTimeout,
 			Transport: transport,
 		},
 		baseURL:  strings.TrimRight(host, "/"),
@@ -209,6 +241,43 @@ func (c *Client) buildParams(api, version, method string, extraParams url.Values
 	return params
 }
 
+// slowCallKey marks a context as belonging to a lifecycle call, so the request
+// layer picks the long-timeout client. It travels in the context rather than in
+// a parameter because every call goes through the same DoAPI/DoAPIPost surface,
+// and threading a flag through all of them would touch every caller to serve a
+// handful.
+type slowCallKey struct{}
+
+// WithSlowCall marks ctx as a call whose duration is bounded by DSM's own work
+// rather than by the network.
+func WithSlowCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, slowCallKey{}, true)
+}
+
+func (c *Client) clientFor(ctx context.Context) *http.Client {
+	if slow, _ := ctx.Value(slowCallKey{}).(bool); slow && c.slowClient != nil {
+		return c.slowClient
+	}
+	return c.httpClient
+}
+
+// IsTimeoutError reports whether err is a request that never got an answer in
+// time — as opposed to an answer that said no. DSM may well have completed the
+// work, so callers can re-check rather than assume failure.
+func IsTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+	return false
+}
+
 func (c *Client) doGetRequest(ctx context.Context, params url.Values) (*APIResponse, error) {
 	return c.executeRequest(ctx, params, http.MethodGet)
 }
@@ -247,7 +316,7 @@ func (c *Client) executeRequest(ctx context.Context, params url.Values, httpMeth
 		}
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.clientFor(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}

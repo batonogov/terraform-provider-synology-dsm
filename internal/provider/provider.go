@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -29,6 +31,7 @@ type synologyProviderModel struct {
 	Username types.String `tfsdk:"username"`
 	Password types.String `tfsdk:"password"`
 	Insecure types.Bool   `tfsdk:"insecure"`
+	Timeout  types.String `tfsdk:"timeout"`
 }
 
 func (p *synologyProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -56,6 +59,13 @@ func (p *synologyProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 			"insecure": schema.BoolAttribute{
 				Optional:    true,
 				Description: "Skip TLS certificate verification (for self-signed certs)",
+			},
+			"timeout": schema.StringAttribute{
+				Optional: true,
+				Description: "Timeout for ordinary DSM requests, as a Go duration such as `60s` or `2m`. Defaults to `30s`. " +
+					"Raise it for slower hardware or a NAS under load. Lifecycle operations that block while DSM works — " +
+					"creating a Container Manager project, writing a compose file — always get at least five minutes " +
+					"regardless of this value, because their duration is bounded by the NAS rather than by the network.",
 			},
 		},
 	}
@@ -104,7 +114,21 @@ func (p *synologyProvider) Configure(ctx context.Context, req provider.Configure
 		"host": host,
 	})
 
-	dsmClient := client.NewClient(host, username, password, insecure)
+	var timeout time.Duration
+	if raw := config.Timeout.ValueString(); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("timeout"),
+				"Invalid timeout",
+				fmt.Sprintf("`timeout` must be a positive Go duration such as `60s` or `2m`, got %q.", raw),
+			)
+			return
+		}
+		timeout = parsed
+	}
+
+	dsmClient := client.NewClientWithTimeout(host, username, password, insecure, timeout)
 
 	if err := dsmClient.Login(ctx); err != nil {
 		resp.Diagnostics.AddError(

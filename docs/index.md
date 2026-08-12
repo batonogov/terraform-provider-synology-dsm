@@ -63,3 +63,4 @@ variable "dsm_password" {
 ### Optional
 
 - `insecure` (Boolean) Skip TLS certificate verification (for self-signed certs)
+- `timeout` (String) Timeout for ordinary DSM requests, as a Go duration such as `60s` or `2m`. Defaults to `30s`. Raise it for slower hardware or a NAS under load. Lifecycle operations that block while DSM works — creating a Container Manager project, writing a compose file — always get at least five minutes regardless of this value, because their duration is bounded by the NAS rather than by the network.
