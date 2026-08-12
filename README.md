@@ -1,6 +1,6 @@
 # terraform-provider-synology-dsm
 
-A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, users, groups, shared folders, permissions, quotas, and per-user home folders.
+A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, users, groups, shared folders, permissions, quotas, and per-user home folders.
 
 Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.API.Auth` v7 with SynoToken). Developed and tested against DSM 7.2.2 and DSM 7.3.2.
 
@@ -15,8 +15,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_user_quota`](#dsm_user_quota) | Manage per-user quotas on a shared folder |
 | [`dsm_user_home_service`](#dsm_user_home_service) | Enable per-user home folders (the `homes` shared folder) |
 | [`dsm_package`](#dsm_package) | Install and control Package Center packages |
+| [`dsm_container_project`](#dsm_container_project) | Manage Docker Compose projects in Container Manager |
 
-Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`) for reading existing objects.
+Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`) for reading existing objects.
 
 ## Requirements
 
@@ -72,6 +73,30 @@ provider "dsm" {
 resource "dsm_package" "container_manager" {
   name   = "ContainerManager"
   volume = "/volume1"
+}
+
+resource "dsm_shared_folder" "containers" {
+  name     = "containers"
+  vol_path = "/volume1"
+}
+
+resource "dsm_container_project" "object_storage" {
+  name       = "s3-storage"
+  share_path = "/${dsm_shared_folder.containers.name}/s3-storage"
+  compose_yaml = <<-YAML
+    services:
+      object-storage:
+        image: minio/minio:latest
+        command: server /data --console-address ":9001"
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        volumes:
+          - ./data:/data
+        restart: unless-stopped
+  YAML
+
+  depends_on = [dsm_package.container_manager]
 }
 
 resource "dsm_group" "developers" {
@@ -360,6 +385,79 @@ terraform import dsm_package.container_manager ContainerManager
 > the package APIs and catalog but blocks package installation with error 103;
 > install acceptance testing therefore requires physical hardware.
 
+### `dsm_container_project`
+
+Creates a Docker Compose project in Synology Container Manager, manages its
+compose document, and controls whether it is running. On compose changes, the
+provider stops a running project, updates it, rebuilds it, and restores the
+requested state.
+
+| Attribute           | Type         | Required | Computed | Description                                                      |
+|---------------------|--------------|----------|----------|------------------------------------------------------------------|
+| `id`                | string       | -        | yes      | Project UUID assigned by Container Manager                       |
+| `name`              | string       | yes      | -        | Unique project name. Forces replacement.                         |
+| `share_path`        | string       | yes      | -        | File Station directory, e.g. `/containers/s3-storage`. Forces replacement. |
+| `compose_yaml`      | string       | yes      | -        | Docker Compose YAML (sensitive)                                  |
+| `running`           | bool         | -        | yes      | Desired running state. Defaults to `true`.                       |
+| `delete_on_destroy` | bool         | -        | yes      | Delete the DSM project on destroy. Defaults to `false`.          |
+| `path`              | string       | -        | yes      | Absolute volume path reported by DSM                             |
+| `status`            | string       | -        | yes      | Raw Container Manager lifecycle status                           |
+| `container_ids`     | list(string) | -        | yes      | Containers associated with the project                           |
+
+```hcl
+resource "dsm_package" "container_manager" {
+  name = "ContainerManager"
+}
+
+resource "dsm_shared_folder" "containers" {
+  name     = "containers"
+  vol_path = "/volume1"
+}
+
+resource "dsm_container_project" "s3_storage" {
+  name       = "s3-storage"
+  share_path = "/${dsm_shared_folder.containers.name}/s3-storage"
+  compose_yaml = <<-YAML
+    services:
+      object-storage:
+        image: minio/minio:latest
+        command: server /data --console-address ":9001"
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        volumes:
+          - ./data:/data
+        restart: unless-stopped
+  YAML
+
+  running           = true
+  delete_on_destroy = false
+  depends_on        = [dsm_package.container_manager]
+}
+```
+
+```bash
+# UUID and project name are both accepted.
+terraform import dsm_container_project.s3_storage s3-storage
+```
+
+> **`share_path` is a File Station path.** Use `/containers/s3-storage`, not
+> `/volume1/containers/s3-storage`. The shared folder itself must already exist;
+> the provider creates the project directory beneath it.
+
+> **Destroy is non-destructive by default.** With `delete_on_destroy = false`,
+> Terraform removes only its state entry. If explicitly enabled, the provider
+> asks DSM to preserve the project directory, but Container Manager may still
+> remove project containers, networks, and related data.
+
+> **Sensitive is not encrypted state.** Terraform redacts `compose_yaml` in UI
+> output, but still stores it in state. Use an encrypted remote state backend
+> and inject application secrets through a separate secret-management path.
+
+> **Requires physical hardware.** Container Manager is model-specific and is
+> unavailable on Virtual DSM. Declare the `dsm_package.container_manager`
+> dependency explicitly so the package is running before project creation.
+
 ## Data sources
 
 Each resource has a read-only data source counterpart that takes the identifying
@@ -374,6 +472,7 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_user_quota`         | `share_name`, `username`                           | `id`, `quota_size`, `quota_used`                    |
 | `dsm_user_home_service`  | — (singleton)                                      | `id`, `enable`, `location`, `enable_recycle_bin`, `enable_domain`, `enable_ldap`, `encryption`, `personal_photo_enable` |
 | `dsm_package`            | `name`                                             | `id`, `display_name`, `version`, `status`, `running`, `description`, `maintainer`, `can_uninstall` |
+| `dsm_container_project`  | `name`                                             | `id`, `share_path`, `compose_yaml`, `running`, `path`, `status`, `container_ids` |
 
 ## Development
 
@@ -417,7 +516,8 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - Leftovers from a failed or interrupted run make the next one fail on creation
   with error 3301. `task test-acc` sweeps first; run `task sweep` on its own to
   clean up manually. Sweepers only delete objects whose name starts with
-  `tfacctest`, so anything else on the NAS is left alone.
+  `tfacctest`, so anything else on the NAS is left alone. Container Manager
+  projects are swept before their backing shared folders.
 - Sessions are short-lived; the provider re-authenticates on error 119 automatically
   (once per call — a 119 that survives a fresh session is reported as is, since
   some APIs use that code for "not the built-in admin").
@@ -426,6 +526,9 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - Installed-package lookup/import can be tested on virtual DSM, but installing
   a Package Center package is blocked there with error 103 and must be verified
   on compatible physical hardware.
+- Container Manager projects are unavailable on virtual DSM. Their acceptance
+  tests require physical hardware and explicit `DSM_ACC_CONTAINER_PROJECT=1`
+  plus an image in `DSM_ACC_CONTAINER_IMAGE` that the NAS can pull.
 
 ### Release flow
 

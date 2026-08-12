@@ -312,7 +312,7 @@ func TestClient_UninstallPackage_RefusesSystemPackage(t *testing.T) {
 func TestParsePackage_ToleratesTopLevelFields(t *testing.T) {
 	pkg, err := parsePackage(json.RawMessage(`{
 		"id":"Demo","name":"Demo Package","version":"1.2.3","status":"stop",
-		"description":"Example","maintainer":"Thoth","ctl_uninstall":"true"
+		"description":"Example","maintainer":"Example Corp","ctl_uninstall":"true"
 	}`))
 	if err != nil {
 		t.Fatalf("parsePackage failed: %v", err)

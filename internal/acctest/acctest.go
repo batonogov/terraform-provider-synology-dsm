@@ -39,6 +39,20 @@ func TestAccPreCheckQuota(t *testing.T) {
 	}
 }
 
+// TestAccPreCheckContainerProject gates tests that build and run a real
+// Container Manager workload. Container Manager is unavailable on virtual DSM,
+// and requiring an explicit image keeps the test independent of public-registry
+// availability on a particular NAS.
+func TestAccPreCheckContainerProject(t *testing.T) {
+	TestAccPreCheck(t)
+	if os.Getenv("DSM_ACC_CONTAINER_PROJECT") != "1" {
+		t.Skip("skipping Container Manager project test: set DSM_ACC_CONTAINER_PROJECT=1 against compatible physical hardware")
+	}
+	if os.Getenv("DSM_ACC_CONTAINER_IMAGE") == "" {
+		t.Skip("skipping Container Manager project test: set DSM_ACC_CONTAINER_IMAGE to an image the NAS can pull")
+	}
+}
+
 // NewTestClient builds a logged-in DSM client from the acceptance-test
 // environment. Use it in CheckDestroy hooks that need to inspect DSM directly,
 // beyond what the Terraform state can tell.
