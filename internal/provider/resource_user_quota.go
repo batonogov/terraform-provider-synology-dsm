@@ -248,7 +248,7 @@ func (v int64AtLeastValidator) Description(_ context.Context) string {
 }
 
 func (v int64AtLeastValidator) MarkdownDescription(_ context.Context) string {
-	return v.Description(nil)
+	return v.Description(context.Background())
 }
 
 func (v int64AtLeastValidator) ValidateInt64(_ context.Context, req validator.Int64Request, resp *validator.Int64Response) {

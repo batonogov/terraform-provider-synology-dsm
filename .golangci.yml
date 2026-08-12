@@ -14,3 +14,7 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+  exclusions:
+    - path: '_test\.go$'
+      linters:
+        - errcheck

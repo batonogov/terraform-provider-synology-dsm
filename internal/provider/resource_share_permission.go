@@ -257,7 +257,7 @@ func (v stringOneOfValidator) Description(_ context.Context) string {
 }
 
 func (v stringOneOfValidator) MarkdownDescription(_ context.Context) string {
-	return v.Description(nil)
+	return v.Description(context.Background())
 }
 
 func (v stringOneOfValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
