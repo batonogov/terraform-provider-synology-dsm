@@ -25,7 +25,7 @@ Terraform provider for Synology DSM using Plugin Framework. Two layers:
 
 **`internal/client/`** — Synology DSM HTTP API client
 - `client.go`: Auth (SYNO.API.Auth v7), session management (SID + SynoToken), `DoAPI()` for GET requests, `DoAPIPost()` for POST requests (SID/SynoToken in query string, other params in body), retry with exponential backoff
-- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`, `package.go`, `container_project.go`: CRUD/lifecycle methods per resource
+- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`, `package.go`, `container_project.go`, `task_scheduler.go`, `event_scheduler.go`: CRUD/lifecycle methods per resource
 
 **`internal/provider/`** — Terraform Plugin Framework wiring
 - `provider.go`: Provider schema (host/username/password/insecure), Configure creates client and logs in
@@ -41,6 +41,9 @@ Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.Ne
 - **Most APIs use GET** — user/group operations send params as query string
 - **`SYNO.Core.User` update is `method=set`** — there is no `update` method; it answers 103 ("method not exist"). Account state is **not** the `disabled` param (accepted and ignored on DSM 7) but `expired`: `normal` / `now` / a `YYYY/M/D` date. DSM always answers dates without leading zeros regardless of input, so the client normalises to `YYYY-MM-DD`. Full findings: `.pi/recon-user-fields-2026-08-07.md`
 - **Shared folder uses POST** — `SYNO.Core.Share` create/update send `shareinfo` as form-encoded POST body. **Update is `method=set`, not `create` with `name_org`** — the latter is rejected with 3301. `share_quota` is written under that name but read back as `quota_value`, and its unit is **gigabytes**. `enable_share_compress`/`enable_share_cow` are creation-time only (a later `set` reports success and changes nothing), and compression requires cow. Full findings: `.pi/recon-share-attributes-2026-08-07.md`
+- **Task Scheduler is versioned per method** — `SYNO.Core.TaskScheduler` uses version **3** for `list`, **4** for `get`/`create`/`set`, and **2** for `delete`/`run`/`set_enable`. Version 4 on `list` returns nothing usable. `schedule` and `extra` are bare JSON objects inside form values (not JSON-quoted); `name`/`owner`/`real_owner`/`type`/`enable`/`id` are plain values. `real_owner` is a lookup key, not decoration: `get`, `set`, `delete`, and `run` all require it, and only `list`/`get` report it — hence `GetScheduledTask` lists first. The schedule document nests `"version": 4`, and `repeat_date` is `1001`/`1002`/`1003` for daily/weekly/monthly with `date_type: 0` (a plain `0` is rejected on DSM 7). `week_day` is `"0,1,2"` with 0 = Sunday, not a bitmask. `set` replaces the whole task; there is no partial update.
+- **Event Scheduler is shaped differently from Task Scheduler** — `SYNO.Core.EventScheduler` is version **1** throughout, is addressed by `task_name` (no numeric id, so rename = replace), has **no** `schedule` or `extra` object (the command is `operation` with `operation_type`, and the notify fields are top level), takes `owner` as a `{uid: name}` JSON map rather than a username, and JSON-quotes its string parameters. `event` is `bootup` or `shutdown`. DSM has no list method here; `SYNO.Core.TaskScheduler.list` returns event tasks mixed in, distinguishable only by having no `id`.
+- **`.Root` is a separate API namespace, not a flag** — `SYNO.Core.TaskScheduler.Root` / `SYNO.Core.EventScheduler.Root` are used *instead of* the base namespace when the owner is `root`, for `create`/`set` only, and additionally require `SynoConfirmPWToken` from `SYNO.Core.User.PasswordConfirm` v2 `auth` (POST, param `password`). Reads and deletes always use the base namespace. The token is fetched per call; its lifetime is undocumented. DSM's own client RSA-encrypts the password over plain HTTP through `SYNO.API.Encryption`; this provider sends it plain and warns at plan time instead.
 - **`_sid` and `SynoToken` must be in query string for POST requests** — DSM validates session from URL params, not POST body. `DoAPIPost()` handles this by moving them from body to query string.
 - **Auth version 7** — `SYNO.API.Auth` version 7 with `enable_syno_token=yes`
 - **Session via `_sid`** — Login returns SID, passed as `_sid` query param (no cookies needed with `format=sid`)
@@ -76,6 +79,35 @@ Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.Ne
 - **Reverse proxy entries**: mutations run under `reverseProxyMu`. The API is per-entry rather than a whole-list `set`, but DSM keeps every entry in one datastore it rewrites and re-renders into nginx on each change, and `CreateReverseProxy` is a non-atomic list → create → list sequence (DSM's create returns no usable UUID). `TestClient_CreateReverseProxy_Concurrent` models a lost-update-prone datastore and fails without the lock. Updates are layered onto the raw entry DSM returned, so unmodelled fields such as `_key` survive the round trip. `frontend.https.http2` is **inferred** from Synology's `synow3.h` and is only sent when enabled; `ReverseProxy.HTTP2` is a `*bool` so "DSM omitted it" stays distinguishable from "DSM said false".
 - **Firewall rules**: `dsm_firewall_rule` manages one rule, but DSM has no per-rule API — every write reads the profile, splices one rule into `rules[<adapter>]`, and writes and applies the whole profile, all under `c.mu` (same lock as share permissions; without it parallel rules clobber each other). Order **is** the policy: DSM matches top to bottom and the array index is the only priority there is (`ruleIndex` is a max+1 counter, not a sort key), so `priority` is a required argument and Read reports the actual index. Rules round-trip through their original JSON map so GeoIP and service-preset selectors survive a write. Two guards live in the client: a lockout check that replays the profile against the client's own source address (recorded from the transport's dialer) and refuses a change that flips reachability from allowed to denied, and a refusal to leave the active profile empty while the firewall is on.
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
+
+## Provider data
+
+`Configure` hands resources and data sources a `*dsmProviderData` (not a bare `*client.Client`), because some resources need provider-level configuration as well as an API client. Use the helpers in `helpers.go`:
+
+- `clientFromProviderData(req.ProviderData, &resp.Diagnostics)` — the common case; returns nil when configuration cannot proceed (including the normal nil-ProviderData case)
+- `providerDataFrom(...)` — when the resource also needs a policy flag, currently only `allowTaskExecution`
+
+## Task execution opt-in
+
+`dsm_scheduled_task` and `dsm_event_task` create DSM tasks that run shell commands, normally as root, which makes write access to a Terraform configuration equivalent to root shell access on the NAS. They are therefore gated behind the provider attribute `allow_task_execution` (default `false`, also readable from `SYNOLOGY_DSM_ALLOW_TASK_EXECUTION`; an explicit `false` in HCL wins over the env var).
+
+- The gate lives in `ModifyPlan`, not `ValidateConfig` — Terraform validates resource config *before* configuring the provider, so `ValidateConfig` cannot see the flag. Failing during plan means a team that leaves it off never reaches apply.
+- Destroy is deliberately not gated: removing a task executes nothing, and a configuration that turned the flag back off must still be able to clean up.
+- Data sources are never gated: reading a task executes nothing.
+- `user` has no default so the privilege is always stated in the open, and `user = "root"` adds a plan-time warning (plus a second warning about the password confirmation when the host is plain HTTP).
+- `command` is intentionally **not** `Sensitive` — hiding a root command from plan output removes the only place a reviewer can see what will run.
+- `user` is `RequiresReplace` on both resources. The owner selects the API namespace (`.Root` or not), so editing it in place would send the modification to the wrong namespace for the task DSM actually holds.
+- The gate is enforced in `ModifyPlan` **and** re-checked in `Create`/`Update`. The duplication is deliberate: a privilege boundary should not rest on one call site, and `resource_task_lifecycle_test.go` fails if either check is removed.
+
+## Task resource hazards worth preserving
+
+Three failure modes here are specific to tasks and each has a regression test in `resource_task_lifecycle_test.go` or the client test files:
+
+- **Never build a client request in argument position.** Go evaluates arguments before the call, so `client.CreateEventTask(ctx, buildRequest(...))` reaches DSM *before* any diagnostic the builder raised can be inspected — creating a root-capable task that no state entry tracks and destroy cannot remove. Build first, check `ok`, then call.
+- **A create that succeeds but cannot be read back must still return a task.** `CreateScheduledTask`/`CreateEventTask` return a non-nil task *alongside* an error in that case, and the resources write state before reporting it. Same reason: DSM has already created the thing.
+- **`real_owner` is never guessed.** The create path reads back through `GetScheduledTask`, which lists first. Assuming `real_owner == owner` breaks exactly when it matters — a root-owned task created from an admin session — and DSM answers a get with the wrong `real_owner` by returning an empty task, i.e. "not found" for something it just created.
+
+Two smaller invariants: `repeat_until_hour` is a `*int` in the client because unset ("end the window at the start hour") and an explicit `0` are different, and an explicit value earlier than `hour` is rejected rather than rewritten (rewriting produced "provider produced inconsistent result after apply"). And `applyScheduledTaskToModel` takes an `applyMode`: an unrepresentable schedule is an error after a write but only a warning during refresh, because failing on refresh would break every later plan including the destroy that would clean it up.
 
 ## Resource implementation pattern
 
@@ -194,6 +226,8 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - **Reverse proxy certificates and access control profiles are out of scope** — an HTTPS source still needs a certificate bound in Control Panel → Security → Certificate, and `access_control_profile` references a profile that must already exist.
 - **Firewall rules unverified on hardware, and there are no acceptance tests** — `dsm_firewall_rule` is covered only by stateful HTTP tests. An acceptance test would have to enable a real firewall on the box running the test suite, which is exactly the thing the resource's own guards exist to prevent; it needs a NAS reachable by console before it can be written safely. Two specifics still to confirm on hardware: whether `Firewall.Profile get` returns the profile bare or nested under a `profile` key (both are accepted), and whether `adapterPolicyMap` keeps that name over HTTP as it does on disk.
 - **Lockout guard sees the local source address** — it uses the local end of the TCP connection to DSM. Behind NAT, DSM sees a different address and the guard can be wrong in both directions. It also cannot replay GeoIP or service-preset rules; those make the check inconclusive, which warns rather than blocks.
+- **Task Scheduler wire contract unverified on hardware** — `SYNO.Core.TaskScheduler` and `SYNO.Core.EventScheduler` are undocumented. The encoding was transcribed from three agreeing implementations (python `synology-api`, `synology-community/go-synology`, 007revad's `task_setup.sh`, the last with real DS218/DSM 7 findings) and is covered by request-asserting httptest cases, but nothing has been run against a NAS from this repository. The parts that are inference rather than transcription are flagged `INFERRED` in the client: `limit=-1` on `list`, and the assumption that event tasks are the list entries carrying no `id`. `SYNO.Core.EventScheduler.get` in particular has no captured real response anywhere, so `parseEventTask` accepts both `task_name`/`name` and `operation`/`script`. There are no acceptance tests for either resource yet.
+- **One-shot scheduled tasks are not modelled** — DSM's `date_type: 1` schedules (a single date, yearly, every 3/6 months) are deliberately unsupported: a fixed past date is not an ongoing desired state. Reading such a task yields an empty `Frequency`, which the resource reports as an error and the data source surfaces as null rather than guessing.
 
 ## Roadmap
 

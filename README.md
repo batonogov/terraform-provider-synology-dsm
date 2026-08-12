@@ -1,6 +1,7 @@
 # terraform-provider-synology-dsm
 
 A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, files in shared folders, users, groups, shared folders, permissions, quotas, and per-user home folders.
+A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, users, groups, shared folders, permissions, quotas, per-user home folders, and Task Scheduler jobs.
 
 Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.API.Auth` v7 with SynoToken). Developed and tested against DSM 7.2.2 and DSM 7.3.2.
 
@@ -20,8 +21,10 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_system_settings`](#dsm_system_settings) | Manage the NAS time zone and NTP synchronisation |
 | [`dsm_reverse_proxy`](#dsm_reverse_proxy) | Publish a service through the DSM Login Portal reverse proxy |
 | [`dsm_firewall_rule`](#dsm_firewall_rule) | Manage rules in a DSM firewall profile |
+| [`dsm_scheduled_task`](#dsm_scheduled_task) | Manage Task Scheduler script tasks (daily, weekly, monthly) |
+| [`dsm_event_task`](#dsm_event_task) | Manage tasks that run on boot or shutdown |
 
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
@@ -154,8 +157,17 @@ resource "dsm_user_quota" "john_quota" {
 | `username`  | string | yes      | DSM administrator username                             |
 | `password`  | string | yes      | DSM password (sensitive)                               |
 | `insecure`  | bool   | no       | Skip TLS certificate verification (self-signed certs)  |
+| `allow_task_execution` | bool | no | Allow `dsm_scheduled_task` and `dsm_event_task`. Defaults to `false`. |
 
-All attributes can be supplied via environment variables: `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`. `SYNOLOGY_DSM_PASSWORD` may be empty to support a DSM in first-login state.
+All attributes can be supplied via environment variables: `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`, `SYNOLOGY_DSM_ALLOW_TASK_EXECUTION`. `SYNOLOGY_DSM_PASSWORD` may be empty to support a DSM in first-login state. An explicit `allow_task_execution = false` in HCL always wins over the environment variable.
+
+> **`allow_task_execution` is a privilege boundary, not a convenience flag.**
+> The two task resources create DSM Task Scheduler entries that run shell
+> commands on the NAS, normally as `root`. Enabling this means that write access
+> to the Terraform configuration — including the ability to get a pull request
+> merged — is equivalent to root shell access on the NAS. Leave it off in
+> workspaces that do not manage tasks; those configurations then fail at plan
+> time rather than silently gaining the capability.
 
 ## Resources
 
@@ -587,6 +599,46 @@ resource "dsm_reverse_proxy" "nextcloud" {
   }
 
   access_control_profile = "internal-only"
+### `dsm_scheduled_task`
+
+Creates a user-defined script task in DSM Task Scheduler and controls when it
+runs. Existing tasks can be imported by numeric id or by name.
+
+| Attribute           | Type   | Required | Computed | Description                                                                 |
+|---------------------|--------|----------|----------|-----------------------------------------------------------------------------|
+| `id`                | string | -        | yes      | Numeric DSM task id, as a string                                            |
+| `name`              | string | yes      | -        | Task name shown in Task Scheduler                                          |
+| `user`              | string | yes      | -        | Account the command runs as. No default — see the warning below. Forces replacement. |
+| `command`           | string | yes      | -        | Shell command DSM executes                                                 |
+| `enabled`           | bool   | no       | yes      | Whether the task is active (default `true`)                                |
+| `notify_email`      | string | no       | -        | Address DSM emails; unset disables notification                            |
+| `notify_on_failure` | bool   | no       | yes      | Notify only on failure (default `false`); requires `notify_email`          |
+| `real_owner`        | string | -        | yes      | Owner DSM records for the entry; needed to address the task                |
+| `schedule`          | block  | yes      | -        | When the task runs                                                         |
+
+The `schedule` block takes `frequency` (`daily`, `weekly`, `monthly`),
+`day_of_week`, `week_of_month`, `hour`, `minute`, `repeat_interval_hours`,
+`repeat_interval_minutes`, and `repeat_until_hour`. It is validated during
+`terraform plan`, so an impossible schedule is rejected before anything is
+applied. Leave `repeat_until_hour` unset to end the same-day repeat window at
+`hour`; setting it earlier than `hour` is an error rather than a silent
+one-shot.
+
+```hcl
+resource "dsm_scheduled_task" "prune_images" {
+  name    = "docker-prune"
+  user    = "root"
+  command = "/usr/local/bin/docker system prune -af --filter until=168h"
+
+  schedule {
+    frequency   = "weekly"
+    day_of_week = ["sunday"]
+    hour        = 4
+    minute      = 30
+  }
+
+  notify_on_failure = true
+  notify_email      = "ops@example.com"
 }
 ```
 
@@ -733,6 +785,67 @@ terraform import dsm_firewall_rule.s3_from_vpn "default:eth0:S3 and HTTPS from t
 > tests — but it has not been exercised against a physical NAS, and Container
 > Manager-style surprises are possible. Try it on a NAS you can reach physically
 > before trusting it with remote access.
+# Numeric id or unique task name.
+terraform import dsm_scheduled_task.prune_images 42
+```
+
+> **This is remote code execution on the NAS.** DSM runs the command as `user`,
+> and `root` is what most automation needs. Anyone who can edit this
+> configuration, approve a pull request touching it, or control a variable that
+> reaches `command` can run arbitrary code as `root` on the NAS. The resource
+> requires `allow_task_execution = true` on the provider, and `user` has no
+> default so the privilege is always stated explicitly. `command` is
+> deliberately **not** marked sensitive: hiding it from `terraform plan` would
+> remove the one place a reviewer can see what the NAS is about to be told to
+> run.
+
+> **Root tasks use a privileged API.** With `user = "root"` the provider calls
+> `SYNO.Core.TaskScheduler.Root`, which requires DSM to re-confirm the provider
+> password. Over a plain `http://` host that password crosses the network in
+> clear text, and the provider warns at plan time. Use `https://`.
+
+> **DSM cannot express arbitrary cron.** Task Scheduler supports daily, weekly,
+> and monthly-by-weekday recurrence only — there is no day-of-month, no month
+> selection, and no cron string. One-shot tasks tied to a single date exist in
+> DSM but are not modelled here, because a single past date is not an ongoing
+> desired state; importing one produces an explanatory error.
+
+### `dsm_event_task`
+
+Creates a task DSM runs when the NAS boots or shuts down.
+
+| Attribute           | Type         | Required | Computed | Description                                                     |
+|---------------------|--------------|----------|----------|-----------------------------------------------------------------|
+| `id`                | string       | -        | yes      | Task name; DSM gives event tasks no numeric id                  |
+| `name`              | string       | yes      | -        | Task name. Forces replacement — DSM cannot rename an event task |
+| `user`              | string       | yes      | -        | Account the command runs as                                     |
+| `event`             | string       | yes      | -        | `bootup` or `shutdown`                                          |
+| `command`           | string       | yes      | -        | Shell command DSM executes                                      |
+| `enabled`           | bool         | no       | yes      | Whether the task is active (default `true`)                     |
+| `notify_email`      | string       | no       | -        | Address DSM emails; unset disables notification                 |
+| `notify_on_failure` | bool         | no       | yes      | Notify only on failure (default `false`)                        |
+| `depends_on_tasks`  | list(string) | no       | -        | Tasks that must finish first                                    |
+| `owner_uid`         | number       | -        | yes      | Numeric uid DSM records for the owner; `0` is root              |
+
+```hcl
+resource "dsm_event_task" "on_boot" {
+  name    = "restore-mounts"
+  user    = "root"
+  event   = "bootup"
+  command = "/volume1/scripts/restore-mounts.sh"
+}
+```
+
+```bash
+terraform import dsm_event_task.on_boot restore-mounts
+```
+
+> **Same privilege boundary as `dsm_scheduled_task`, with a sharper edge.** A
+> `bootup` task runs unattended on every restart, including one nobody planned,
+> and normally as `root`. It requires `allow_task_execution = true`.
+
+> **The name is the identity.** DSM addresses event tasks by name and assigns no
+> id, so changing `name` destroys and recreates the task.
 
 ## Data sources
 
@@ -752,6 +865,13 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_system_settings`    | — (singleton)                                      | `id`, `timezone`, `ntp_enabled`, `ntp_server`, `current_date`, `current_time`, `timestamp` |
 | `dsm_reverse_proxy`      | `description`                                      | `id`, `source_protocol`, `source_hostname`, `source_port`, `destination_protocol`, `destination_hostname`, `destination_port`, `websocket`, `http2`, `hsts`, `custom_headers`, `access_control_profile`, `access_control_profile_id`, `proxy_connect_timeout`, `proxy_read_timeout`, `proxy_send_timeout`, `proxy_intercept_errors` |
 | `dsm_firewall_rule`      | `profile`, `adapter`, `name`                       | `id`, `priority`, `action`, `protocol`, `ports`, `source`, `enabled`, `firewall_enabled`, `profile_active` |
+| `dsm_scheduled_task`     | `name`                                             | `id`, `user`, `command`, `enabled`, `notify_email`, `notify_on_failure`, `real_owner`, `type`, `schedule` |
+| `dsm_event_task`         | `name`                                             | `id`, `user`, `event`, `command`, `enabled`, `notify_email`, `notify_on_failure`, `depends_on_tasks`, `owner_uid` |
+
+Both task data sources are read-only and are **not** gated behind
+`allow_task_execution`: reading a task executes nothing, and being able to audit
+what a NAS already runs unattended is useful precisely in the configurations
+that keep the resources switched off.
 
 ## Development
 

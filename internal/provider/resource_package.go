@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
@@ -132,9 +131,8 @@ func (r *packageResource) Configure(_ context.Context, req resource.ConfigureReq
 	if req.ProviderData == nil {
 		return
 	}
-	dsmClient, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Provider Data", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+	dsmClient := clientFromProviderData(req.ProviderData, &resp.Diagnostics)
+	if dsmClient == nil {
 		return
 	}
 	r.client = dsmClient

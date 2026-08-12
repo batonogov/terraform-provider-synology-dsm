@@ -25,11 +25,11 @@ type userQuotaResource struct {
 }
 
 type userQuotaResourceModel struct {
-	ID         types.String `tfsdk:"id"`
-	ShareName  types.String `tfsdk:"share_name"`
-	Username   types.String `tfsdk:"username"`
-	QuotaSize  types.Int64  `tfsdk:"quota_size"`
-	QuotaUsed  types.Int64  `tfsdk:"quota_used"`
+	ID        types.String `tfsdk:"id"`
+	ShareName types.String `tfsdk:"share_name"`
+	Username  types.String `tfsdk:"username"`
+	QuotaSize types.Int64  `tfsdk:"quota_size"`
+	QuotaUsed types.Int64  `tfsdk:"quota_used"`
 }
 
 func (r *userQuotaResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -85,12 +85,8 @@ func (r *userQuotaResource) Configure(_ context.Context, req resource.ConfigureR
 		return
 	}
 
-	dsmClient, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Provider Data",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
-		)
+	dsmClient := clientFromProviderData(req.ProviderData, &resp.Diagnostics)
+	if dsmClient == nil {
 		return
 	}
 

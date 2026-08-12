@@ -117,12 +117,8 @@ func (r *userResource) Configure(_ context.Context, req resource.ConfigureReques
 		return
 	}
 
-	dsmClient, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Provider Data",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
-		)
+	dsmClient := clientFromProviderData(req.ProviderData, &resp.Diagnostics)
+	if dsmClient == nil {
 		return
 	}
 

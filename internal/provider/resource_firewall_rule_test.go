@@ -83,7 +83,9 @@ func TestFirewallRuleResource_Configure(t *testing.T) {
 	}
 
 	ok := &resource.ConfigureResponse{}
-	r.Configure(t.Context(), resource.ConfigureRequest{ProviderData: client.NewClient("http://dsm:5000", "admin", "", false)}, ok)
+	r.Configure(t.Context(), resource.ConfigureRequest{
+		ProviderData: &dsmProviderData{client: client.NewClient("http://dsm:5000", "admin", "", false)},
+	}, ok)
 	if ok.Diagnostics.HasError() {
 		t.Fatalf("unexpected diagnostics: %v", ok.Diagnostics)
 	}
