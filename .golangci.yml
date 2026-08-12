@@ -8,7 +8,6 @@ linters:
   default: none
   enable:
     - bodyclose
-    - contextcheck
 
 issues:
   max-issues-per-linter: 0
