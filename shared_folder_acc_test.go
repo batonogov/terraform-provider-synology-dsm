@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"regexp"
 	"testing"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/acctest"
+	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
@@ -235,6 +238,107 @@ resource "dsm_shared_folder" "test" {
 `),
 				// The folder is destroyed and recreated, so the new value sticks.
 				Check: resource.TestCheckResourceAttr("dsm_shared_folder.test", "enable_share_compress", "true"),
+			},
+		},
+	})
+}
+
+// TestAccSharedFolder_adoptExisting covers #53: a shared folder that already
+// exists on the NAS — created by hand, left by a failed apply, or made by DSM
+// itself — can be brought under management instead of failing with 3301.
+//
+// The folder is created outside Terraform in PreConfig, which is the situation
+// being fixed; creating it through a first Terraform step would put it in state
+// and never exercise adoption.
+func TestAccSharedFolder_adoptExisting(t *testing.T) {
+	acctest.TestAccPreCheck(t)
+
+	const name = "tfacctestadopt"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				PreConfig: func() {
+					c, err := sweeperClient()
+					if err != nil {
+						t.Fatalf("build DSM client: %v", err)
+					}
+					if _, err := c.CreateShare(context.Background(), client.CreateShareRequest{
+						Name:             name,
+						VolPath:          "/volume1",
+						Description:      "Created outside Terraform",
+						EnableRecycleBin: true,
+					}); err != nil {
+						t.Fatalf("pre-create share outside Terraform: %v", err)
+					}
+				},
+				Config: acctest.ComposeTestResourceConfig(`
+resource "dsm_shared_folder" "adopted" {
+  name               = "` + name + `"
+  vol_path           = "/volume1"
+  description        = "Adopted by Terraform"
+  adopt_existing     = true
+  enable_recycle_bin = false
+}
+`),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("dsm_shared_folder.adopted", "name", name),
+					resource.TestCheckResourceAttr("dsm_shared_folder.adopted", "adopt_existing", "true"),
+					// The configuration must have been applied to the adopted folder,
+					// not merely recorded: both of these differ from how it was created.
+					resource.TestCheckResourceAttr("dsm_shared_folder.adopted", "description", "Adopted by Terraform"),
+					resource.TestCheckResourceAttr("dsm_shared_folder.adopted", "enable_recycle_bin", "false"),
+					resource.TestCheckResourceAttrSet("dsm_shared_folder.adopted", "uuid"),
+				),
+			},
+			// An adopted folder must behave like any other managed one afterwards.
+			{
+				Config: acctest.ComposeTestResourceConfig(`
+resource "dsm_shared_folder" "adopted" {
+  name               = "` + name + `"
+  vol_path           = "/volume1"
+  description        = "Adopted by Terraform"
+  adopt_existing     = true
+  enable_recycle_bin = false
+}
+`),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSharedFolder_existingWithoutAdoptFails is the other half of #53: with
+// adopt_existing left at its default, a collision must still fail — and say how
+// to resolve it rather than reporting a bare 3301.
+func TestAccSharedFolder_existingWithoutAdoptFails(t *testing.T) {
+	acctest.TestAccPreCheck(t)
+
+	const name = "tfacctestnoadopt"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.TestAccProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				PreConfig: func() {
+					c, err := sweeperClient()
+					if err != nil {
+						t.Fatalf("build DSM client: %v", err)
+					}
+					if _, err := c.CreateShare(context.Background(), client.CreateShareRequest{
+						Name: name, VolPath: "/volume1",
+					}); err != nil {
+						t.Fatalf("pre-create share outside Terraform: %v", err)
+					}
+				},
+				Config: acctest.ComposeTestResourceConfig(`
+resource "dsm_shared_folder" "strict" {
+  name     = "` + name + `"
+  vol_path = "/volume1"
+}
+`),
+				ExpectError: regexp.MustCompile(`already exists[\s\S]*terraform import`),
 			},
 		},
 	})
