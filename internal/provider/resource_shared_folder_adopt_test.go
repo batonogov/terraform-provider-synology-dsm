@@ -122,6 +122,23 @@ func TestAdoptExistingShare_RefusesVolumeMismatch(t *testing.T) {
 	}
 }
 
+// TestAdoptExistingShare_ToleratesTrailingSlash: a trailing slash is not a
+// different volume, and refusing the adoption over one would be a distinction
+// DSM itself does not draw.
+func TestAdoptExistingShare_ToleratesTrailingSlash(t *testing.T) {
+	c, state := newAdoptTestServer(t, "/volume1/")
+
+	if _, err := adoptExistingShare(context.Background(), c, client.CreateShareRequest{
+		Name:    "containers",
+		VolPath: "/volume1",
+	}); err != nil {
+		t.Fatalf("trailing slash should not block adoption, got: %v", err)
+	}
+	if got := state.setCalls.Load(); got != 1 {
+		t.Errorf("expected the configuration to be applied, saw %d set calls", got)
+	}
+}
+
 // TestSharedFolderSchema_AdoptExisting keeps the attribute wired up and, more
 // importantly, keeps it opt-in: defaulting to adoption would let `destroy`
 // delete a folder full of data the practitioner never told Terraform to own.

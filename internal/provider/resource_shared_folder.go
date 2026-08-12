@@ -221,7 +221,9 @@ func adoptExistingShare(ctx context.Context, c *client.Client, req client.Create
 		return nil, fmt.Errorf("adopt existing shared folder %q: %w", req.Name, err)
 	}
 
-	if existing.VolPath != req.VolPath {
+	// Compared with the trailing slash removed: refusing an adoption over "/volume1"
+	// versus "/volume1/" would be a distinction DSM itself does not draw.
+	if normalizeVolPath(existing.VolPath) != normalizeVolPath(req.VolPath) {
 		return nil, fmt.Errorf(
 			"shared folder %q already exists on %s, but the configuration puts it on %s; "+
 				"DSM cannot move a shared folder between volumes, so it cannot be adopted",
@@ -233,6 +235,16 @@ func adoptExistingShare(ctx context.Context, c *client.Client, req client.Create
 		return nil, fmt.Errorf("apply configuration to adopted shared folder %q: %w", req.Name, err)
 	}
 	return share, nil
+}
+
+// normalizeVolPath strips a trailing slash so "/volume1" and "/volume1/" are
+// treated as the same volume. "/" is left alone — it is not a valid volume, and
+// reducing it to "" would make two different bad values compare equal.
+func normalizeVolPath(volPath string) string {
+	if volPath == "/" {
+		return volPath
+	}
+	return strings.TrimSuffix(volPath, "/")
 }
 
 // sharedFolderErrorDetail turns a share API failure into something the reader
