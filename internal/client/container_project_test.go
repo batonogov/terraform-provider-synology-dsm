@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -452,5 +453,74 @@ func TestFormatProjectDiagnostics_KeepsTheTail(t *testing.T) {
 	}
 	if n := strings.Count(got, "\n  "); n != maxProjectDiagnosticLines {
 		t.Errorf("expected %d retained lines, got %d", maxProjectDiagnosticLines, n)
+	}
+}
+
+// TestContainerProject_RunningAcceptsWarning covers #69: a compose file with a
+// one-shot init container settles on WARNING — the init container exited 0 and
+// the long-lived services are up. Treating that as "not running yet" cost a
+// ten-minute timeout and failed an apply whose services were fine.
+func TestContainerProject_RunningAcceptsWarning(t *testing.T) {
+	tests := []struct {
+		status           string
+		running          bool
+		partiallyRunning bool
+	}{
+		{"RUNNING", true, false},
+		{"running", true, false},
+		{"WARNING", true, true},
+		{"warning", true, true},
+		{"STOPPED", false, false},
+		{"BUILD_FAILED", false, false},
+		{"", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			project := ContainerProject{Status: tt.status}
+			if got := project.Running(); got != tt.running {
+				t.Errorf("Running() = %v, want %v", got, tt.running)
+			}
+			if got := project.PartiallyRunning(); got != tt.partiallyRunning {
+				t.Errorf("PartiallyRunning() = %v, want %v", got, tt.partiallyRunning)
+			}
+		})
+	}
+}
+
+// TestWaitForContainerProject_SettlesOnWarning is the end-to-end half of #69:
+// the wait must return as soon as DSM reports WARNING, not poll until the
+// deadline.
+func TestWaitForContainerProject_SettlesOnWarning(t *testing.T) {
+	restore := shrinkContainerProjectPolling(t)
+	defer restore()
+
+	var polls atomic.Int32
+	client, server := newContainerProjectTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, method := containerProjectRequest(r)
+		if method != "get" {
+			t.Fatalf("unexpected method %q", method)
+		}
+		// STARTING first, then the steady WARNING an init container leaves behind.
+		status := "WARNING"
+		if polls.Add(1) == 1 {
+			status = "STARTING"
+		}
+		writeContainerProjectResponse(w, map[string]interface{}{
+			"id": "project-uuid", "name": "gitlab-runner", "share_path": "/docker/gitlab-runner",
+			"path": "/volume1/docker/gitlab-runner", "status": status, "content": "services: {}\n",
+		})
+	})
+	defer server.Close()
+
+	project, err := client.waitForContainerProjectRunningState(context.Background(), "project-uuid", true)
+	if err != nil {
+		t.Fatalf("wait should settle on WARNING, got: %v", err)
+	}
+	if project.Status != "WARNING" {
+		t.Errorf("status = %q, want WARNING", project.Status)
+	}
+	if got := polls.Load(); got != 2 {
+		t.Errorf("expected the wait to stop as soon as the status settled, polled %d times", got)
 	}
 }

@@ -99,8 +99,12 @@ func (r *containerProjectResource) Schema(_ context.Context, _ resource.SchemaRe
 				Description: "Absolute volume path reported by DSM for the project directory.",
 			},
 			"status": schema.StringAttribute{
-				Computed:    true,
-				Description: "Raw project lifecycle status reported by Container Manager.",
+				Computed: true,
+				Description: "Raw project lifecycle status reported by Container Manager. `WARNING` means some containers " +
+					"are running and some are not — the steady state of a compose file with a one-shot init container, " +
+					"which exits once its work is done. The provider treats it as running and raises a Terraform warning, " +
+					"since the same status also covers a container that failed to start. Assert on this attribute if a " +
+					"deployment must have every container up.",
 			},
 			"container_ids": schema.ListAttribute{
 				Computed:    true,
@@ -266,6 +270,20 @@ func applyContainerProjectToResourceModel(ctx context.Context, model *containerP
 	containerIDs, listDiags := types.ListValueFrom(ctx, types.StringType, project.ContainerIDs)
 	diags.Append(listDiags...)
 	model.ContainerIDs = containerIDs
+
+	// A project counts as running while some of its containers are not, because
+	// that is the steady state of a one-shot init container. Say so rather than
+	// letting it pass silently: the same status covers a container that died for
+	// a reason worth knowing about.
+	if project.PartiallyRunning() {
+		diags.AddWarning(
+			"Container Manager project is only partially running",
+			fmt.Sprintf("Project %q reports status %q: some of its containers are not running while others are.\n\n"+
+				"This is expected when the compose file uses a one-shot init container — it exits once its work is done. "+
+				"If none was intended, inspect the project in Container Manager: a container that failed to start leaves "+
+				"the project in the same status.", project.Name, project.Status),
+		)
+	}
 }
 
 func containerProjectErrorDetail(err error) string {

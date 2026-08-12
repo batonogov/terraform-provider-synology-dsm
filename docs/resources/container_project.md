@@ -54,7 +54,7 @@ resource "dsm_container_project" "object_storage" {
 - `container_ids` (List of String) Container identifiers currently associated with the project.
 - `id` (String) Project UUID assigned by Container Manager.
 - `path` (String) Absolute volume path reported by DSM for the project directory.
-- `status` (String) Raw project lifecycle status reported by Container Manager.
+- `status` (String) Raw project lifecycle status reported by Container Manager. `WARNING` means some containers are running and some are not — the steady state of a compose file with a one-shot init container, which exits once its work is done. The provider treats it as running and raises a Terraform warning, since the same status also covers a container that failed to start. Assert on this attribute if a deployment must have every container up.
 
 ## Import
 
