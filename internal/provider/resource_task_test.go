@@ -229,7 +229,7 @@ func TestApplyScheduledTaskToModel(t *testing.T) {
 			Hour:       4,
 			Minute:     30,
 		},
-	}, &diags)
+	}, &diags, applyForWrite)
 
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %v", diags)
@@ -261,7 +261,7 @@ func TestApplyScheduledTaskToModelRejectsUnsupportedSchedule(t *testing.T) {
 	applyScheduledTaskToModel(t.Context(), model, &client.ScheduledTask{
 		ID:   7,
 		Name: "one-shot",
-	}, &diags)
+	}, &diags, applyForWrite)
 
 	if !diags.HasError() {
 		t.Fatal("expected an error for a schedule the provider cannot represent")

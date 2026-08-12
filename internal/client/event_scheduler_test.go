@@ -255,6 +255,37 @@ func TestClient_GetEventTask_MissingTask(t *testing.T) {
 	}
 }
 
+func TestClient_UpdateEventTask(t *testing.T) {
+	var requests []capturedRequest
+	c, server := eventSchedulerServer(t, &requests)
+	defer server.Close()
+
+	_, err := c.UpdateEventTask(context.Background(), EventTaskRequest{
+		Name:    "restore-mounts",
+		Owner:   "operator",
+		Event:   "shutdown",
+		Command: "/bin/true",
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("UpdateEventTask failed: %v", err)
+	}
+
+	set := findRequest(t, requests, "set")
+	if got := set.taskParam("task_name"); got != `"restore-mounts"` {
+		t.Errorf("task_name = %s, want the quoted name, which is the primary key", got)
+	}
+	if got := set.taskParam("event"); got != `"shutdown"` {
+		t.Errorf("event = %s", got)
+	}
+	if got := set.taskParam("enable"); got != "false" {
+		t.Errorf("enable = %q, want false", got)
+	}
+	if got := set.taskParam("api"); got != "SYNO.Core.EventScheduler" {
+		t.Errorf("api = %q, want the unprivileged namespace for a non-root owner", got)
+	}
+}
+
 func TestClient_DeleteEventTask(t *testing.T) {
 	var requests []capturedRequest
 	c, server := eventSchedulerServer(t, &requests)
@@ -284,6 +315,117 @@ func TestParseDependOnTask(t *testing.T) {
 		if got := parseDependOnTask(input); !reflect.DeepEqual(got, want) {
 			t.Errorf("parseDependOnTask(%q) = %#v, want %#v", input, got, want)
 		}
+	}
+}
+
+// TestClient_CreateEventTaskReturnsTaskWhenReadBackFails mirrors the scheduled
+// task case: DSM has already created a task that will run on every boot, so a
+// failed read-back must still yield something the caller can record.
+func TestClient_CreateEventTaskReturnsTaskWhenReadBackFails(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webapi/entry.cgi", func(w http.ResponseWriter, r *http.Request) {
+		captured := recordRequest(r)
+		switch captured.taskParam("method") {
+		case "auth":
+			raw, _ := json.Marshal(map[string]interface{}{"SynoConfirmPWToken": "confirm-token"})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+		case "create":
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true})
+		default: // the read-back
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: 105}})
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewClient(server.URL, "admin", "hunter2", false)
+	c.setSession("test-sid", "test-token")
+
+	task, err := c.CreateEventTask(context.Background(), EventTaskRequest{
+		Name:    "restore-mounts",
+		Owner:   "root",
+		Event:   "bootup",
+		Command: "/volume1/scripts/restore-mounts.sh",
+		Enabled: true,
+	})
+
+	if err == nil {
+		t.Fatal("expected the read-back failure to be reported")
+	}
+	if task == nil {
+		t.Fatal("a task created on the NAS must be returned even when it cannot be read back")
+	}
+	if task.Name != "restore-mounts" || task.Event != "bootup" {
+		t.Errorf("fallback task should describe what was requested, got %+v", task)
+	}
+}
+
+// TestClient_ListEventTasksPropagatesFailures pins that a per-task lookup
+// failure is reported rather than quietly shortening the list. A sweeper or an
+// audit acting on a truncated list would conclude a task is absent when it is
+// merely unreadable.
+func TestClient_ListEventTasksPropagatesFailures(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webapi/entry.cgi", func(w http.ResponseWriter, r *http.Request) {
+		captured := recordRequest(r)
+		switch captured.taskParam("method") {
+		case "list":
+			raw, _ := json.Marshal(map[string]interface{}{
+				"tasks": []map[string]interface{}{
+					{"name": "restore-mounts", "owner": "root", "enable": true},
+				},
+			})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+		default:
+			// A session that expired between the list and the get.
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: 105}})
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewClient(server.URL, "admin", "", false)
+	c.setSession("test-sid", "")
+
+	tasks, err := c.ListEventTasks(context.Background())
+	if err == nil {
+		t.Fatalf("expected the lookup failure to surface, got %d tasks and no error", len(tasks))
+	}
+	if !IsAPIError(err, 105) {
+		t.Errorf("error should carry the DSM code, got %v", err)
+	}
+}
+
+// TestClient_ListEventTasksSkipsVanishedTasks is the complement: a task that
+// disappeared between the list and the get is a benign race, not a failure.
+func TestClient_ListEventTasksSkipsVanishedTasks(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webapi/entry.cgi", func(w http.ResponseWriter, r *http.Request) {
+		captured := recordRequest(r)
+		if captured.taskParam("method") == "list" {
+			raw, _ := json.Marshal(map[string]interface{}{
+				"tasks": []map[string]interface{}{
+					{"name": "gone", "owner": "root", "enable": true},
+				},
+			})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+			return
+		}
+		// DSM's "no such task" shape: success with an empty payload.
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: json.RawMessage(`{}`)})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewClient(server.URL, "admin", "", false)
+	c.setSession("test-sid", "")
+
+	tasks, err := c.ListEventTasks(context.Background())
+	if err != nil {
+		t.Fatalf("a vanished task should not fail the listing: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("got %d tasks, want the vanished one skipped", len(tasks))
 	}
 }
 

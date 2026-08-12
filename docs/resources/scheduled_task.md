@@ -79,7 +79,7 @@ resource "dsm_scheduled_task" "monthly_report" {
 
 - `command` (String) Shell command DSM executes. Prefer a literal command over one interpolated from variables or remote data: an interpolated command moves the privilege boundary to whoever controls that input.
 - `name` (String) Task name shown in Task Scheduler.
-- `user` (String) Account DSM runs the command as. There is no default: naming the account is how a configuration states, in the open, which privileges the command gets. `root` gives it full control of the NAS and routes the call through DSM's privileged `SYNO.Core.TaskScheduler.Root` API, which additionally re-confirms the provider password.
+- `user` (String) Account DSM runs the command as. There is no default: naming the account is how a configuration states, in the open, which privileges the command gets. `root` gives it full control of the NAS and routes the call through DSM's privileged `SYNO.Core.TaskScheduler.Root` API, which additionally re-confirms the provider password. Changing this forces a new task, because the owner selects which API namespace DSM will accept the change through.
 
 ### Optional
 

@@ -100,7 +100,15 @@ func (c *Client) ListEventTasks(ctx context.Context) ([]EventTask, error) {
 		}
 		event, err := c.GetEventTask(ctx, task.Name)
 		if err != nil {
-			continue
+			// A task that disappeared between the list and the get is a benign
+			// race and is simply skipped. Anything else — a expired session, a
+			// permission refusal, a transient network failure — must not be
+			// silently turned into a shorter list, because a caller that acts on
+			// that list (a sweeper, an audit) would conclude the task is absent.
+			if errors.Is(err, ErrEventTaskNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("list event tasks: %w", err)
 		}
 		events = append(events, *event)
 	}
@@ -131,7 +139,31 @@ func (c *Client) CreateEventTask(ctx context.Context, req EventTaskRequest) (*Ev
 	if err := c.writeEventTask(ctx, "create", req); err != nil {
 		return nil, fmt.Errorf("create event task %q: %w", req.Name, err)
 	}
-	return c.GetEventTask(ctx, req.Name)
+
+	task, err := c.GetEventTask(ctx, req.Name)
+	if err != nil {
+		// The task now exists on the NAS. Returning nil here would leave a task
+		// that runs on every boot, as root, with nothing tracking it and no way
+		// for destroy to remove it — so hand back what was requested alongside
+		// the error and let the caller record it.
+		return eventTaskFromRequest(req), fmt.Errorf("event task %q was created but could not be read back: %w", req.Name, err)
+	}
+	return task, nil
+}
+
+// eventTaskFromRequest reconstructs what was just asked for, for use when DSM
+// accepts a create but the read-back fails. Only ever returned with an error.
+func eventTaskFromRequest(req EventTaskRequest) *EventTask {
+	return &EventTask{
+		Name:            req.Name,
+		Owner:           req.Owner,
+		Event:           req.Event,
+		Enabled:         req.Enabled,
+		Command:         req.Command,
+		NotifyEmail:     req.NotifyEmail,
+		NotifyOnFailure: req.NotifyOnFailure,
+		DependsOn:       req.DependsOn,
+	}
 }
 
 // UpdateEventTask rewrites an existing task. DSM's set replaces every field, so

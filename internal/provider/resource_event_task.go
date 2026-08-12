@@ -69,7 +69,13 @@ func (r *eventTaskResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Required: true,
 				Description: "Account DSM runs the command as. There is no default: naming the account is how a configuration states, in the open, " +
 					"which privileges the command gets. `root` gives it full control of the NAS and routes the call through DSM's privileged " +
-					"`SYNO.Core.EventScheduler.Root` API, which additionally re-confirms the provider password.",
+					"`SYNO.Core.EventScheduler.Root` API, which additionally re-confirms the provider password. " +
+					"Changing this forces a new task, because the owner selects which API namespace DSM will accept the change through.",
+				PlanModifiers: []planmodifier.String{
+					// See dsm_scheduled_task: switching owner in place would send the
+					// modification to the wrong API namespace for the task DSM holds.
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"event": schema.StringAttribute{
 				Required: true,
@@ -141,20 +147,10 @@ func (r *eventTaskResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	checkTaskExecutionAllowed(r.allowTaskExecution, "dsm_event_task", &resp.Diagnostics)
 	warnAboutTaskPrivileges(r.client, plan.User, plan.Name, &resp.Diagnostics)
 
-	if !plan.Event.IsNull() && !plan.Event.IsUnknown() && !slices.Contains(client.EventTriggers, plan.Event.ValueString()) {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("event"),
-			"Unsupported event",
-			fmt.Sprintf("DSM triggers event tasks on %s. Use a dsm_scheduled_task for anything time-based.", strings.Join(client.EventTriggers, " or ")),
-		)
-	}
-	if plan.NotifyOnFailure.ValueBool() && plan.NotifyEmail.ValueString() == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("notify_on_failure"),
-			"notify_on_failure requires notify_email",
-			"DSM cannot send a failure notification without an address. Set notify_email or remove notify_on_failure.",
-		)
-	}
+	// Validate through the same builder the apply path uses, so a bad event or a
+	// notification without an address is refused during plan rather than
+	// halfway through an apply.
+	eventTaskRequestFromModel(ctx, &plan, &resp.Diagnostics)
 }
 
 func (r *eventTaskResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -177,8 +173,26 @@ func (r *eventTaskResource) Create(ctx context.Context, req resource.CreateReque
 		"event": plan.Event.ValueString(),
 	})
 
-	task, err := r.client.CreateEventTask(ctx, eventTaskRequestFromModel(ctx, &plan, &resp.Diagnostics))
-	if resp.Diagnostics.HasError() {
+	// Build the request first. Passing the builder as a call argument would let
+	// Go evaluate it *and* reach DSM before any diagnostic it raised could be
+	// checked, creating a root-capable task that no state entry tracks.
+	createReq, ok := eventTaskRequestFromModel(ctx, &plan, &resp.Diagnostics)
+	if !ok {
+		return
+	}
+
+	task, err := r.client.CreateEventTask(ctx, createReq)
+	if err != nil && task != nil {
+		// DSM created the task but the read-back failed. Record what is known
+		// before reporting: an untracked boot task keeps running as root and
+		// destroy cannot remove it.
+		applyEventTaskToModel(ctx, &plan, task, &resp.Diagnostics)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		resp.Diagnostics.AddError(
+			"Event task was created but could not be read back",
+			eventTaskErrorDetail(err)+"\n\nThe task has been recorded in state from the configuration so that it stays managed. "+
+				"Run `terraform plan` to reconcile it with what DSM actually stored.",
+		)
 		return
 	}
 	if err != nil {
@@ -239,12 +253,17 @@ func (r *eventTaskResource) Update(ctx context.Context, req resource.UpdateReque
 		"user": plan.User.ValueString(),
 	})
 
-	// DSM's set replaces the whole task, so the request carries the complete
-	// desired state rather than a delta.
-	task, err := r.client.UpdateEventTask(ctx, eventTaskRequestFromModel(ctx, &plan, &resp.Diagnostics))
-	if resp.Diagnostics.HasError() {
+	// Built before the call for the same reason as in Create: an argument-position
+	// builder would have already reached DSM by the time its diagnostics could be
+	// inspected.
+	updateReq, ok := eventTaskRequestFromModel(ctx, &plan, &resp.Diagnostics)
+	if !ok {
 		return
 	}
+
+	// DSM's set replaces the whole task, so the request carries the complete
+	// desired state rather than a delta.
+	task, err := r.client.UpdateEventTask(ctx, updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update event task", eventTaskErrorDetail(err))
 		return
@@ -280,13 +299,16 @@ func (r *eventTaskResource) ImportState(ctx context.Context, req resource.Import
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func eventTaskRequestFromModel(ctx context.Context, model *eventTaskResourceModel, diags *diag.Diagnostics) client.EventTaskRequest {
+// eventTaskRequestFromModel builds the client request and reports whether it is
+// safe to send. It owns the validation so that plan and apply enforce exactly
+// the same rules — the same arrangement dsm_scheduled_task uses.
+func eventTaskRequestFromModel(ctx context.Context, model *eventTaskResourceModel, diags *diag.Diagnostics) (client.EventTaskRequest, bool) {
 	var dependsOn []string
 	if !model.DependsOnTasks.IsNull() && !model.DependsOnTasks.IsUnknown() {
 		diags.Append(model.DependsOnTasks.ElementsAs(ctx, &dependsOn, false)...)
 	}
 
-	return client.EventTaskRequest{
+	req := client.EventTaskRequest{
 		Name:            model.Name.ValueString(),
 		Owner:           model.User.ValueString(),
 		Event:           model.Event.ValueString(),
@@ -296,6 +318,23 @@ func eventTaskRequestFromModel(ctx context.Context, model *eventTaskResourceMode
 		NotifyOnFailure: model.NotifyOnFailure.ValueBool(),
 		DependsOn:       dependsOn,
 	}
+
+	if !model.Event.IsUnknown() && !slices.Contains(client.EventTriggers, req.Event) {
+		diags.AddAttributeError(
+			path.Root("event"),
+			"Unsupported event",
+			fmt.Sprintf("DSM triggers event tasks on %s. Use a dsm_scheduled_task for anything time-based.", strings.Join(client.EventTriggers, " or ")),
+		)
+	}
+	if model.NotifyOnFailure.ValueBool() && req.NotifyEmail == "" && !model.NotifyEmail.IsUnknown() {
+		diags.AddAttributeError(
+			path.Root("notify_on_failure"),
+			"notify_on_failure requires notify_email",
+			"DSM cannot send a failure notification without an address. Set notify_email or remove notify_on_failure.",
+		)
+	}
+
+	return req, !diags.HasError()
 }
 
 func applyEventTaskToModel(ctx context.Context, model *eventTaskResourceModel, task *client.EventTask, diags *diag.Diagnostics) {
@@ -308,11 +347,24 @@ func applyEventTaskToModel(ctx context.Context, model *eventTaskResourceModel, t
 	model.NotifyOnFailure = types.BoolValue(task.NotifyOnFailure)
 	model.OwnerUID = types.Int64Value(int64(task.OwnerUID))
 
-	// DSM reports the owner through the uid map it stores. Keep the configured
-	// name when DSM does not echo one back, rather than blanking a required
-	// attribute.
-	if task.Owner != "" {
+	// Read is expected to populate every state field. DSM reports the owner
+	// through the uid map it stores, but this API's read path is the least
+	// verified part of the contract, so handle a missing owner explicitly rather
+	// than silently leaving a required attribute null: keep whatever the prior
+	// state or plan held, and say so when there is nothing to keep, which is the
+	// case on a fresh import.
+	switch {
+	case task.Owner != "":
 		model.User = types.StringValue(task.Owner)
+	case !model.User.IsNull() && !model.User.IsUnknown():
+		// Leave the known value in place.
+	default:
+		model.User = types.StringNull()
+		diags.AddWarning(
+			"DSM did not report the owner of this event task",
+			fmt.Sprintf("Task %q was read back without an owner, so `user` could not be populated. Set `user` in the configuration to the account "+
+				"the task should run as; the next apply will write it to DSM.", task.Name),
+		)
 	}
 
 	if len(task.DependsOn) == 0 {

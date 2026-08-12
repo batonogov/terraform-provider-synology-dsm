@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func intPtr(v int) *int { return &v }
 
 // capturedRequest records what the client actually put on the wire. The point
 // of these tests is the request, not the response: the DSM Task Scheduler API
@@ -16,6 +19,10 @@ import (
 type capturedRequest struct {
 	Method string
 	Form   map[string]string
+	// Query and Body are kept apart because DSM's session handling depends on
+	// the difference: _sid and SynoToken are only honoured in the query string.
+	Query url.Values
+	Body  url.Values
 }
 
 // taskParam reads a parameter regardless of whether the client sent it as a
@@ -26,7 +33,12 @@ func (c capturedRequest) taskParam(name string) string {
 
 func recordRequest(r *http.Request) capturedRequest {
 	_ = r.ParseForm()
-	captured := capturedRequest{Method: r.Method, Form: map[string]string{}}
+	captured := capturedRequest{
+		Method: r.Method,
+		Form:   map[string]string{},
+		Query:  r.URL.Query(),
+		Body:   r.PostForm,
+	}
 	for key := range r.Form {
 		captured.Form[key] = r.Form.Get(key)
 	}
@@ -253,7 +265,7 @@ func TestClient_CreateScheduledTask_DailyCoversEveryWeekday(t *testing.T) {
 		Owner:    "operator",
 		Command:  "/bin/true",
 		Enabled:  true,
-		Schedule: TaskSchedule{Frequency: "daily", Hour: 2, RepeatIntervalMinutes: 15, RepeatUntilHour: 20},
+		Schedule: TaskSchedule{Frequency: "daily", Hour: 2, RepeatIntervalMinutes: 15, RepeatUntilHour: intPtr(20)},
 	})
 	if err != nil {
 		t.Fatalf("CreateScheduledTask failed: %v", err)
@@ -524,4 +536,218 @@ func TestParseScheduledTaskConfigIgnoresDisabledNotification(t *testing.T) {
 	if task.NotifyEmail != "" {
 		t.Errorf("notify_email = %q, want empty when notify_enable is false", task.NotifyEmail)
 	}
+}
+
+// TestClient_PostRequestsKeepSessionInQueryString guards the provider-wide
+// invariant that DSM only accepts _sid and SynoToken as URL parameters. A POST
+// that carries them in the body instead is answered with error 119, which looks
+// exactly like an expired session and sends debugging in the wrong direction.
+func TestClient_PostRequestsKeepSessionInQueryString(t *testing.T) {
+	var requests []capturedRequest
+	c, server := taskSchedulerServer(t, &requests)
+	defer server.Close()
+
+	_, err := c.CreateScheduledTask(context.Background(), CreateScheduledTaskRequest{
+		Name:     "prune",
+		Owner:    "operator",
+		Command:  "/bin/true",
+		Enabled:  true,
+		Schedule: TaskSchedule{Frequency: "daily"},
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledTask failed: %v", err)
+	}
+
+	create := findRequest(t, requests, "create")
+	if create.Method != http.MethodPost {
+		t.Fatalf("expected a POST, got %s", create.Method)
+	}
+
+	if got := create.Query.Get("_sid"); got != "test-sid" {
+		t.Errorf("_sid must travel in the query string, got %q there", got)
+	}
+	if got := create.Query.Get("SynoToken"); got != "test-token" {
+		t.Errorf("SynoToken must travel in the query string, got %q there", got)
+	}
+	// And must not be duplicated into the body, where DSM ignores them.
+	if _, ok := create.Body["_sid"]; ok {
+		t.Error("_sid must not be sent in the POST body")
+	}
+	if _, ok := create.Body["SynoToken"]; ok {
+		t.Error("SynoToken must not be sent in the POST body")
+	}
+	// The actual payload does belong in the body.
+	if create.Body.Get("schedule") == "" {
+		t.Error("schedule should be in the POST body")
+	}
+}
+
+// realOwnerServer models the case this resource exists for: an admin session
+// creating a root-owned task. DSM records real_owner as root, and answers a get
+// carrying any other real_owner with an empty task rather than an error.
+func realOwnerServer(t *testing.T, requests *[]capturedRequest, readBackFails bool) (*Client, *httptest.Server) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webapi/entry.cgi", func(w http.ResponseWriter, r *http.Request) {
+		captured := recordRequest(r)
+		*requests = append(*requests, captured)
+
+		api := captured.taskParam("api")
+		method := captured.taskParam("method")
+
+		switch {
+		case api == "SYNO.Core.User.PasswordConfirm":
+			raw, _ := json.Marshal(map[string]interface{}{"SynoConfirmPWToken": "confirm-token"})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+
+		case strings.HasPrefix(api, "SYNO.Core.TaskScheduler") && method == "create":
+			raw, _ := json.Marshal(map[string]interface{}{"id": 42})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+
+		case method == "list":
+			if readBackFails {
+				_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: 105}})
+				return
+			}
+			raw, _ := json.Marshal(map[string]interface{}{
+				"tasks": []map[string]interface{}{
+					{"id": 42, "name": "prune", "owner": "root", "real_owner": "root", "enable": true, "type": "script"},
+				},
+			})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+
+		case method == "get":
+			// The defining behaviour: a mismatched real_owner yields nothing.
+			if captured.taskParam("real_owner") != "root" {
+				_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: json.RawMessage(`{}`)})
+				return
+			}
+			raw, _ := json.Marshal(map[string]interface{}{
+				"id": 42, "name": "prune", "owner": "root", "real_owner": "root", "enable": true, "type": "script",
+				"extra":    map[string]interface{}{"script": "/bin/true"},
+				"schedule": map[string]interface{}{"repeat_date": 1001, "hour": 4, "last_work_hour": 4},
+			})
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
+
+		default:
+			_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: 101}})
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	c := NewClient(server.URL, "admin", "hunter2", false)
+	c.setSession("test-sid", "test-token")
+	return c, server
+}
+
+// TestClient_CreateScheduledTaskResolvesRealOwner is the regression test for
+// assuming real_owner equals the requested owner. Creating a root-owned task
+// while authenticated as admin is precisely when the two differ, and guessing
+// made DSM report the task it had just created as missing.
+func TestClient_CreateScheduledTaskResolvesRealOwner(t *testing.T) {
+	var requests []capturedRequest
+	c, server := realOwnerServer(t, &requests, false)
+	defer server.Close()
+
+	task, err := c.CreateScheduledTask(context.Background(), CreateScheduledTaskRequest{
+		Name:     "prune",
+		Owner:    "root",
+		Command:  "/bin/true",
+		Enabled:  true,
+		Schedule: TaskSchedule{Frequency: "daily", Hour: 4},
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledTask failed: %v", err)
+	}
+	if task.RealOwner != "root" {
+		t.Errorf("real_owner = %q, want the value DSM reports through list", task.RealOwner)
+	}
+
+	// The read-back must consult list rather than reuse the requested owner.
+	if _, ok := findRequestIfPresent(requests, "list"); !ok {
+		t.Error("create should look the real owner up through list before calling get")
+	}
+	get := findRequest(t, requests, "get")
+	if got := get.taskParam("real_owner"); got != "root" {
+		t.Errorf("get real_owner = %q, want root", got)
+	}
+}
+
+// TestClient_CreateScheduledTaskReturnsTaskWhenReadBackFails covers the other
+// half of the same hazard: DSM has already created the task, so a failed
+// read-back must still hand the caller something to record. Returning only an
+// error would leave a root-owned task on the NAS that no state tracks and that
+// destroy cannot remove.
+func TestClient_CreateScheduledTaskReturnsTaskWhenReadBackFails(t *testing.T) {
+	var requests []capturedRequest
+	c, server := realOwnerServer(t, &requests, true)
+	defer server.Close()
+
+	task, err := c.CreateScheduledTask(context.Background(), CreateScheduledTaskRequest{
+		Name:     "prune",
+		Owner:    "root",
+		Command:  "/bin/true",
+		Enabled:  true,
+		Schedule: TaskSchedule{Frequency: "daily", Hour: 4},
+	})
+
+	if err == nil {
+		t.Fatal("expected the read-back failure to be reported")
+	}
+	if task == nil {
+		t.Fatal("a task created on the NAS must be returned even when it cannot be read back")
+	}
+	if task.ID != 42 {
+		t.Errorf("id = %d, want the id DSM assigned so the task stays addressable", task.ID)
+	}
+	if task.Name != "prune" || task.Command != "/bin/true" {
+		t.Errorf("fallback task should describe what was requested, got %+v", task)
+	}
+	if !strings.Contains(err.Error(), "created") {
+		t.Errorf("error should make clear the task exists: %v", err)
+	}
+}
+
+func findRequestIfPresent(requests []capturedRequest, method string) (capturedRequest, bool) {
+	for _, req := range requests {
+		if req.taskParam("method") == method {
+			return req, true
+		}
+	}
+	return capturedRequest{}, false
+}
+
+func TestEncodeScheduleRepeatWindow(t *testing.T) {
+	t.Run("unset ends the window at the start hour", func(t *testing.T) {
+		encoded, err := ValidateTaskSchedule(TaskSchedule{Frequency: "daily", Hour: 9, RepeatIntervalHours: 2})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if encoded["last_work_hour"] != 9 {
+			t.Errorf("last_work_hour = %v, want the start hour", encoded["last_work_hour"])
+		}
+	})
+
+	t.Run("explicit value is preserved", func(t *testing.T) {
+		encoded, err := ValidateTaskSchedule(TaskSchedule{Frequency: "daily", Hour: 9, RepeatIntervalHours: 2, RepeatUntilHour: intPtr(18)})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if encoded["last_work_hour"] != 18 {
+			t.Errorf("last_work_hour = %v, want 18", encoded["last_work_hour"])
+		}
+	})
+
+	t.Run("a window closing before the start is rejected", func(t *testing.T) {
+		// Silently rewriting this to the start hour is what produced "provider
+		// produced inconsistent result after apply".
+		_, err := ValidateTaskSchedule(TaskSchedule{Frequency: "daily", Hour: 9, RepeatUntilHour: intPtr(0)})
+		if err == nil {
+			t.Fatal("expected repeat_until_hour earlier than hour to be rejected")
+		}
+		if !strings.Contains(err.Error(), "must not be earlier than hour") {
+			t.Errorf("error = %q", err)
+		}
+	})
 }

@@ -177,7 +177,10 @@ func (d *scheduledTaskDataSource) Read(ctx context.Context, req datasource.ReadR
 		Minute:                types.Int64Value(int64(task.Schedule.Minute)),
 		RepeatIntervalHours:   types.Int64Value(int64(task.Schedule.RepeatIntervalHours)),
 		RepeatIntervalMinutes: types.Int64Value(int64(task.Schedule.RepeatIntervalMinutes)),
-		RepeatUntilHour:       types.Int64Value(int64(task.Schedule.RepeatUntilHour)),
+		RepeatUntilHour:       types.Int64Null(),
+	}
+	if task.Schedule.RepeatUntilHour != nil {
+		config.Schedule.RepeatUntilHour = types.Int64Value(int64(*task.Schedule.RepeatUntilHour))
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)

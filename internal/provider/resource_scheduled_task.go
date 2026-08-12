@@ -85,7 +85,17 @@ func (r *scheduledTaskResource) Schema(_ context.Context, _ resource.SchemaReque
 				Required: true,
 				Description: "Account DSM runs the command as. There is no default: naming the account is how a configuration states, in the open, " +
 					"which privileges the command gets. `root` gives it full control of the NAS and routes the call through DSM's privileged " +
-					"`SYNO.Core.TaskScheduler.Root` API, which additionally re-confirms the provider password.",
+					"`SYNO.Core.TaskScheduler.Root` API, which additionally re-confirms the provider password. " +
+					"Changing this forces a new task, because the owner selects which API namespace DSM will accept the change through.",
+				PlanModifiers: []planmodifier.String{
+					// The owner is not an ordinary attribute: it decides whether a
+					// modification goes to SYNO.Core.TaskScheduler or to its .Root
+					// counterpart. Editing root -> operator in place would send an
+					// unprivileged `set` for a task DSM holds as root-owned, which
+					// fails mid-apply at best. Replacing the task keeps the privilege
+					// transition explicit and atomic.
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"command": schema.StringAttribute{
 				Required: true,
@@ -218,7 +228,64 @@ func (r *scheduledTaskResource) ModifyPlan(ctx context.Context, req resource.Mod
 			"Missing schedule block",
 			"A dsm_scheduled_task requires a schedule block. Use a dsm_event_task instead for a task that runs on boot or shutdown.",
 		)
+		return
 	}
+
+	// Validate the schedule here rather than only on the way to DSM. An invalid
+	// frequency or an out-of-range hour is knowable from the configuration
+	// alone, and a resource that can execute code as root is the last place to
+	// discover a typo halfway through an apply, with some resources already
+	// created.
+	validateScheduleAtPlan(ctx, plan.Schedule, &resp.Diagnostics)
+}
+
+// validateScheduleAtPlan runs the client's own encoding rules over a planned
+// schedule, skipping any check whose inputs are still unknown. Reusing
+// ValidateTaskSchedule keeps plan-time and request-time rules from drifting
+// apart, which is what makes the promise in its doc comment true.
+func validateScheduleAtPlan(ctx context.Context, schedule *taskScheduleModel, diags *diag.Diagnostics) {
+	if scheduleHasUnknowns(schedule) {
+		// A value computed from another resource is only knowable at apply time;
+		// the request path still validates it before anything reaches DSM.
+		return
+	}
+
+	var ignored diag.Diagnostics
+	if _, err := client.ValidateTaskSchedule(taskScheduleFromModel(ctx, schedule, &ignored)); err != nil {
+		diags.AddAttributeError(path.Root("schedule"), "Invalid schedule", err.Error())
+	}
+}
+
+func scheduleHasUnknowns(schedule *taskScheduleModel) bool {
+	return schedule.Frequency.IsUnknown() ||
+		schedule.DayOfWeek.IsUnknown() ||
+		schedule.WeekOfMonth.IsUnknown() ||
+		schedule.Hour.IsUnknown() ||
+		schedule.Minute.IsUnknown() ||
+		schedule.RepeatIntervalHours.IsUnknown() ||
+		schedule.RepeatIntervalMinutes.IsUnknown() ||
+		schedule.RepeatUntilHour.IsUnknown()
+}
+
+// taskScheduleFromModel converts the Terraform model into the client's
+// vocabulary. A null repeat_until_hour stays nil rather than becoming 0: the
+// client treats those differently, and collapsing them would turn "end the
+// window at the start hour" into "end it at midnight".
+func taskScheduleFromModel(ctx context.Context, schedule *taskScheduleModel, diags *diag.Diagnostics) client.TaskSchedule {
+	converted := client.TaskSchedule{
+		Frequency:             schedule.Frequency.ValueString(),
+		DaysOfWeek:            stringSetValues(ctx, schedule.DayOfWeek, diags),
+		WeeksOfMonth:          stringSetValues(ctx, schedule.WeekOfMonth, diags),
+		Hour:                  int(schedule.Hour.ValueInt64()),
+		Minute:                int(schedule.Minute.ValueInt64()),
+		RepeatIntervalHours:   int(schedule.RepeatIntervalHours.ValueInt64()),
+		RepeatIntervalMinutes: int(schedule.RepeatIntervalMinutes.ValueInt64()),
+	}
+	if !schedule.RepeatUntilHour.IsNull() && !schedule.RepeatUntilHour.IsUnknown() {
+		repeatUntilHour := int(schedule.RepeatUntilHour.ValueInt64())
+		converted.RepeatUntilHour = &repeatUntilHour
+	}
+	return converted
 }
 
 func (r *scheduledTaskResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -242,12 +309,25 @@ func (r *scheduledTaskResource) Create(ctx context.Context, req resource.CreateR
 	})
 
 	task, err := r.client.CreateScheduledTask(ctx, createReq)
+	if err != nil && task != nil {
+		// DSM created the task but the read-back failed. Record what is known
+		// before reporting the error: without a state entry the task keeps
+		// running on the NAS, as root, and destroy cannot remove it.
+		applyScheduledTaskToModel(ctx, &plan, task, &resp.Diagnostics, applyForWrite)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		resp.Diagnostics.AddError(
+			"Scheduled task was created but could not be read back",
+			scheduledTaskErrorDetail(err)+"\n\nThe task has been recorded in state from the configuration so that it stays managed. "+
+				"Run `terraform plan` to reconcile it with what DSM actually stored.",
+		)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create scheduled task", scheduledTaskErrorDetail(err))
 		return
 	}
 
-	applyScheduledTaskToModel(ctx, &plan, task, &resp.Diagnostics)
+	applyScheduledTaskToModel(ctx, &plan, task, &resp.Diagnostics, applyForWrite)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -271,7 +351,7 @@ func (r *scheduledTaskResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	applyScheduledTaskToModel(ctx, &state, task, &resp.Diagnostics)
+	applyScheduledTaskToModel(ctx, &state, task, &resp.Diagnostics, applyForRead)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -319,7 +399,7 @@ func (r *scheduledTaskResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 
-	applyScheduledTaskToModel(ctx, &plan, task, &resp.Diagnostics)
+	applyScheduledTaskToModel(ctx, &plan, task, &resp.Diagnostics, applyForWrite)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -388,16 +468,7 @@ func scheduledTaskRequestFromModel(ctx context.Context, model *scheduledTaskReso
 		return req, false
 	}
 
-	req.Schedule = client.TaskSchedule{
-		Frequency:             model.Schedule.Frequency.ValueString(),
-		DaysOfWeek:            stringSetValues(ctx, model.Schedule.DayOfWeek, diags),
-		WeeksOfMonth:          stringSetValues(ctx, model.Schedule.WeekOfMonth, diags),
-		Hour:                  int(model.Schedule.Hour.ValueInt64()),
-		Minute:                int(model.Schedule.Minute.ValueInt64()),
-		RepeatIntervalHours:   int(model.Schedule.RepeatIntervalHours.ValueInt64()),
-		RepeatIntervalMinutes: int(model.Schedule.RepeatIntervalMinutes.ValueInt64()),
-		RepeatUntilHour:       int(model.Schedule.RepeatUntilHour.ValueInt64()),
-	}
+	req.Schedule = taskScheduleFromModel(ctx, model.Schedule, diags)
 
 	if model.NotifyOnFailure.ValueBool() && model.NotifyEmail.ValueString() == "" {
 		diags.AddAttributeError(
@@ -418,7 +489,23 @@ func scheduledTaskRequestFromModel(ctx context.Context, model *scheduledTaskReso
 	return req, !diags.HasError()
 }
 
-func applyScheduledTaskToModel(ctx context.Context, model *scheduledTaskResourceModel, task *client.ScheduledTask, diags *diag.Diagnostics) {
+// applyMode controls what happens when DSM reports a schedule this provider
+// cannot represent.
+type applyMode int
+
+const (
+	// applyForWrite is used after create and update, where an unrepresentable
+	// schedule means the provider wrote something it cannot read back — a bug
+	// worth failing on.
+	applyForWrite applyMode = iota
+	// applyForRead is used during refresh, where the same situation means an
+	// administrator changed the task in DSM's UI. Failing there would break
+	// every subsequent plan, including the destroy that would clean it up,
+	// stranding the user on `-refresh=false` or `state rm`.
+	applyForRead
+)
+
+func applyScheduledTaskToModel(ctx context.Context, model *scheduledTaskResourceModel, task *client.ScheduledTask, diags *diag.Diagnostics, mode applyMode) {
 	model.ID = types.StringValue(strconv.Itoa(task.ID))
 	model.Name = types.StringValue(task.Name)
 	model.User = types.StringValue(task.Owner)
@@ -429,12 +516,17 @@ func applyScheduledTaskToModel(ctx context.Context, model *scheduledTaskResource
 	model.RealOwner = types.StringValue(task.RealOwner)
 
 	if task.Schedule.Frequency == "" {
-		diags.AddError(
-			"Unsupported task schedule",
-			fmt.Sprintf("DSM task %q uses a schedule this provider cannot represent — most likely a one-shot task tied to a single date. "+
-				"Manage it in DSM instead, or recreate it with a daily, weekly, or monthly schedule.", task.Name),
-		)
-		return
+		detail := fmt.Sprintf("DSM task %q uses a schedule this provider cannot represent — most likely a one-shot task tied to a single date. "+
+			"Manage it in DSM instead, or recreate it with a daily, weekly, or monthly schedule.", task.Name)
+		if mode == applyForWrite {
+			diags.AddError("Unsupported task schedule", detail)
+			return
+		}
+		// On refresh, report the drift but keep the resource usable: the recorded
+		// schedule becomes null, so the next plan offers to put the configured
+		// schedule back, and destroy still works.
+		diags.AddWarning("Task schedule was changed outside Terraform", detail+
+			"\n\nTerraform has recorded the schedule as unset. The next plan will offer to restore the schedule from the configuration.")
 	}
 
 	dayOfWeek, dayDiags := types.SetValueFrom(ctx, types.StringType, task.Schedule.DaysOfWeek)
@@ -443,14 +535,17 @@ func applyScheduledTaskToModel(ctx context.Context, model *scheduledTaskResource
 	diags.Append(weekDiags...)
 
 	model.Schedule = &taskScheduleModel{
-		Frequency:             types.StringValue(task.Schedule.Frequency),
+		Frequency:             nullableString(task.Schedule.Frequency),
 		DayOfWeek:             dayOfWeek,
 		WeekOfMonth:           weekOfMonth,
 		Hour:                  types.Int64Value(int64(task.Schedule.Hour)),
 		Minute:                types.Int64Value(int64(task.Schedule.Minute)),
 		RepeatIntervalHours:   types.Int64Value(int64(task.Schedule.RepeatIntervalHours)),
 		RepeatIntervalMinutes: types.Int64Value(int64(task.Schedule.RepeatIntervalMinutes)),
-		RepeatUntilHour:       types.Int64Value(int64(task.Schedule.RepeatUntilHour)),
+		RepeatUntilHour:       types.Int64Null(),
+	}
+	if task.Schedule.RepeatUntilHour != nil {
+		model.Schedule.RepeatUntilHour = types.Int64Value(int64(*task.Schedule.RepeatUntilHour))
 	}
 
 	// DSM reports an empty selection as an empty set; a configuration that

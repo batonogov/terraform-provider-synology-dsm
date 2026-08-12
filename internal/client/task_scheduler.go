@@ -85,7 +85,14 @@ type TaskSchedule struct {
 	RepeatIntervalMinutes int
 	// RepeatUntilHour is DSM's last_work_hour: the last hour of the day at which
 	// a same-day repeat may still fire.
-	RepeatUntilHour int
+	//
+	// It is a pointer because "unset" and "0" are genuinely different. Unset
+	// means "end the window at the start hour", which is what DSM's UI stores
+	// for a task with no same-day repeat. A literal 0 with a later start hour is
+	// a contradiction — the window would close before the task first runs — and
+	// is rejected rather than quietly rewritten, because rewriting it makes
+	// Terraform report an inconsistent result after apply.
+	RepeatUntilHour *int
 }
 
 // CreateScheduledTaskRequest describes a task to create. Owner is the account
@@ -300,7 +307,48 @@ func (c *Client) CreateScheduledTask(ctx context.Context, req CreateScheduledTas
 		return nil, fmt.Errorf("create scheduled task %q: DSM did not return a task id", req.Name)
 	}
 
-	return c.getScheduledTaskConfig(ctx, result.ID, req.Owner)
+	// Read back through GetScheduledTask, which lists first to learn the real
+	// owner. Guessing that it equals req.Owner is wrong in exactly the case this
+	// resource exists for: creating a root-owned task while authenticated as
+	// admin. DSM answers a get with the wrong real_owner by returning an empty
+	// task, which would surface as "not found" for a task it had just created.
+	task, err := c.GetScheduledTask(ctx, result.ID)
+	if err != nil {
+		// The task exists — DSM returned its id — so the caller must be able to
+		// record it even though the read-back failed. Returning a nil task here
+		// would leave a root-owned task running on the NAS that no Terraform
+		// state knows about, and that destroy would never remove.
+		return scheduledTaskFromRequest(req, result.ID), fmt.Errorf(
+			"scheduled task %q was created as id %d but could not be read back: %w", req.Name, result.ID, err)
+	}
+	return task, nil
+}
+
+// scheduledTaskFromRequest reconstructs what was just asked for, for use when
+// DSM accepts a create but the read-back fails. The values are the requested
+// ones rather than DSM's, and RealOwner is the caller's best guess — which is
+// why this is only ever returned alongside an error.
+func scheduledTaskFromRequest(req CreateScheduledTaskRequest, id int) *ScheduledTask {
+	schedule := req.Schedule
+	if schedule.RepeatUntilHour == nil {
+		// Mirror the default encodeSchedule applied on the way out, so the value
+		// recorded in state is the one DSM was actually told to store.
+		lastWorkHour := schedule.Hour
+		schedule.RepeatUntilHour = &lastWorkHour
+	}
+
+	return &ScheduledTask{
+		ID:              id,
+		Name:            req.Name,
+		Owner:           req.Owner,
+		RealOwner:       req.Owner,
+		Enabled:         req.Enabled,
+		Command:         req.Command,
+		NotifyEmail:     req.NotifyEmail,
+		NotifyOnFailure: req.NotifyOnFailure,
+		Type:            taskTypeScript,
+		Schedule:        schedule,
+	}
 }
 
 func (c *Client) UpdateScheduledTask(ctx context.Context, id int, req UpdateScheduledTaskRequest) (*ScheduledTask, error) {
@@ -539,12 +587,19 @@ func encodeSchedule(schedule TaskSchedule) (map[string]interface{}, error) {
 
 	// DSM stores the end of the repeat window even when no repeat is configured;
 	// it then equals the start hour, which is what its UI sends.
-	lastWorkHour := schedule.RepeatUntilHour
-	if lastWorkHour == 0 {
-		lastWorkHour = schedule.Hour
-	}
-	if lastWorkHour < 0 || lastWorkHour > 23 {
-		return nil, fmt.Errorf("repeat_until_hour must be between 0 and 23, got %d", lastWorkHour)
+	lastWorkHour := schedule.Hour
+	if schedule.RepeatUntilHour != nil {
+		lastWorkHour = *schedule.RepeatUntilHour
+		if lastWorkHour < 0 || lastWorkHour > 23 {
+			return nil, fmt.Errorf("repeat_until_hour must be between 0 and 23, got %d", lastWorkHour)
+		}
+		// A window that closes before the task starts would silently reduce a
+		// repeating task to a single run, which is the opposite of what asking
+		// for a repeat means.
+		if lastWorkHour < schedule.Hour {
+			return nil, fmt.Errorf("repeat_until_hour (%d) must not be earlier than hour (%d): the repeat window would close before the task first runs",
+				lastWorkHour, schedule.Hour)
+		}
 	}
 
 	return map[string]interface{}{
@@ -669,8 +724,11 @@ func parseSchedule(m map[string]interface{}) TaskSchedule {
 		Minute:                intField(m, "minute"),
 		RepeatIntervalHours:   intField(m, "repeat_hour"),
 		RepeatIntervalMinutes: intField(m, "repeat_min"),
-		RepeatUntilHour:       intField(m, "last_work_hour"),
 	}
+	// DSM always reports a concrete last_work_hour, so the read side is never
+	// "unset" even when the caller left it so on the way in.
+	lastWorkHour := intField(m, "last_work_hour")
+	schedule.RepeatUntilHour = &lastWorkHour
 
 	switch intField(m, "repeat_date") {
 	case repeatDateDaily:
@@ -691,8 +749,10 @@ func parseSchedule(m map[string]interface{}) TaskSchedule {
 		}
 	}
 
-	// monthly_week is asymmetric: it is written as a JSON string nested in the
-	// schedule document but read back as a real array.
+	// This client writes monthly_week as an array and DSM reads it back as one.
+	// The string case is here for the python reference client's double-encoded
+	// form, which DSM also accepts and therefore may already be stored on a NAS
+	// whose tasks were created with that library.
 	switch value := m["monthly_week"].(type) {
 	case []interface{}:
 		for _, item := range value {

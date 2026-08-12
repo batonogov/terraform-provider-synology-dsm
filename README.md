@@ -610,7 +610,7 @@ runs. Existing tasks can be imported by numeric id or by name.
 |---------------------|--------|----------|----------|-----------------------------------------------------------------------------|
 | `id`                | string | -        | yes      | Numeric DSM task id, as a string                                            |
 | `name`              | string | yes      | -        | Task name shown in Task Scheduler                                          |
-| `user`              | string | yes      | -        | Account the command runs as. No default — see the warning below.           |
+| `user`              | string | yes      | -        | Account the command runs as. No default — see the warning below. Forces replacement. |
 | `command`           | string | yes      | -        | Shell command DSM executes                                                 |
 | `enabled`           | bool   | no       | yes      | Whether the task is active (default `true`)                                |
 | `notify_email`      | string | no       | -        | Address DSM emails; unset disables notification                            |
@@ -620,7 +620,11 @@ runs. Existing tasks can be imported by numeric id or by name.
 
 The `schedule` block takes `frequency` (`daily`, `weekly`, `monthly`),
 `day_of_week`, `week_of_month`, `hour`, `minute`, `repeat_interval_hours`,
-`repeat_interval_minutes`, and `repeat_until_hour`.
+`repeat_interval_minutes`, and `repeat_until_hour`. It is validated during
+`terraform plan`, so an impossible schedule is rejected before anything is
+applied. Leave `repeat_until_hour` unset to end the same-day repeat window at
+`hour`; setting it earlier than `hour` is an error rather than a silent
+one-shot.
 
 ```hcl
 resource "dsm_scheduled_task" "prune_images" {

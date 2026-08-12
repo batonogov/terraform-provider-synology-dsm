@@ -96,6 +96,18 @@ Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.Ne
 - Data sources are never gated: reading a task executes nothing.
 - `user` has no default so the privilege is always stated in the open, and `user = "root"` adds a plan-time warning (plus a second warning about the password confirmation when the host is plain HTTP).
 - `command` is intentionally **not** `Sensitive` — hiding a root command from plan output removes the only place a reviewer can see what will run.
+- `user` is `RequiresReplace` on both resources. The owner selects the API namespace (`.Root` or not), so editing it in place would send the modification to the wrong namespace for the task DSM actually holds.
+- The gate is enforced in `ModifyPlan` **and** re-checked in `Create`/`Update`. The duplication is deliberate: a privilege boundary should not rest on one call site, and `resource_task_lifecycle_test.go` fails if either check is removed.
+
+## Task resource hazards worth preserving
+
+Three failure modes here are specific to tasks and each has a regression test in `resource_task_lifecycle_test.go` or the client test files:
+
+- **Never build a client request in argument position.** Go evaluates arguments before the call, so `client.CreateEventTask(ctx, buildRequest(...))` reaches DSM *before* any diagnostic the builder raised can be inspected — creating a root-capable task that no state entry tracks and destroy cannot remove. Build first, check `ok`, then call.
+- **A create that succeeds but cannot be read back must still return a task.** `CreateScheduledTask`/`CreateEventTask` return a non-nil task *alongside* an error in that case, and the resources write state before reporting it. Same reason: DSM has already created the thing.
+- **`real_owner` is never guessed.** The create path reads back through `GetScheduledTask`, which lists first. Assuming `real_owner == owner` breaks exactly when it matters — a root-owned task created from an admin session — and DSM answers a get with the wrong `real_owner` by returning an empty task, i.e. "not found" for something it just created.
+
+Two smaller invariants: `repeat_until_hour` is a `*int` in the client because unset ("end the window at the start hour") and an explicit `0` are different, and an explicit value earlier than `hour` is rejected rather than rewritten (rewriting produced "provider produced inconsistent result after apply"). And `applyScheduledTaskToModel` takes an `applyMode`: an unrepresentable schedule is an error after a write but only a warning during refresh, because failing on refresh would break every later plan including the destroy that would clean it up.
 
 ## Resource implementation pattern
 

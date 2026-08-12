@@ -53,7 +53,7 @@ resource "dsm_event_task" "on_shutdown" {
 - `command` (String) Shell command DSM executes. Prefer a literal command over one interpolated from variables or remote data: an interpolated command moves the privilege boundary to whoever controls that input.
 - `event` (String) System event that triggers the task: `bootup` or `shutdown`. A `bootup` task runs unattended on every restart, including one nobody asked for.
 - `name` (String) Task name shown in Task Scheduler. DSM addresses event tasks by name and gives them no numeric id, so renaming one replaces it.
-- `user` (String) Account DSM runs the command as. There is no default: naming the account is how a configuration states, in the open, which privileges the command gets. `root` gives it full control of the NAS and routes the call through DSM's privileged `SYNO.Core.EventScheduler.Root` API, which additionally re-confirms the provider password.
+- `user` (String) Account DSM runs the command as. There is no default: naming the account is how a configuration states, in the open, which privileges the command gets. `root` gives it full control of the NAS and routes the call through DSM's privileged `SYNO.Core.EventScheduler.Root` API, which additionally re-confirms the provider password. Changing this forces a new task, because the owner selects which API namespace DSM will accept the change through.
 
 ### Optional
 
