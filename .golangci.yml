@@ -7,13 +7,8 @@ run:
 linters:
   default: none
   enable:
-    - errcheck
     - bodyclose
     - contextcheck
-  exclusions:
-    - path: '_test\.go$'
-      linters:
-        - errcheck
 
 issues:
   max-issues-per-linter: 0
