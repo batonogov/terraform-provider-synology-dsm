@@ -37,6 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Needed to move the release PR from "autorelease: tagged" to
+      # "autorelease: published" once the artifacts have verified.
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,3 +99,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh release edit "$TAG_NAME" --draft=false --latest
+
+      # Release Please marks a release published itself — but only for releases
+      # it publishes. This workflow deliberately keeps them as drafts until the
+      # artifacts verify, so that step never runs and the release PR stays on
+      # "autorelease: tagged".
+      #
+      # That label is how Release Please finds the previous release when it
+      # computes the next one. Without it, the next release PR restates the
+      # whole history as its changelog: 0.2.0 listed every commit back to the
+      # first, including everything already shipped in 0.1.0 and 0.1.1.
+      - name: Mark the release PR published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.release-please.outputs.release_sha }}
+        run: |
+          # The release commit is the squash-merge of the release PR, so the
+          # commit resolves back to the PR that produced it.
+          pr_number="$(gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" --jq '.[0].number')"
+          test -n "$pr_number"
+
+          gh pr edit "$pr_number" \
+            --add-label "autorelease: published" \
+            --remove-label "autorelease: tagged"
