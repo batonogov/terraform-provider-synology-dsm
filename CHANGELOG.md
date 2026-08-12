@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.1.0...v0.1.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* report DSM errors as sentences instead of bare codes ([#54](https://github.com/batonogov/terraform-provider-synology-dsm/issues/54)) ([e808aa4](https://github.com/batonogov/terraform-provider-synology-dsm/commit/e808aa4d563f93c9f1210b73f41900b352467d60))
+* serialise share mutations and retry DSM busy codes ([#56](https://github.com/batonogov/terraform-provider-synology-dsm/issues/56)) ([ef1ad32](https://github.com/batonogov/terraform-provider-synology-dsm/commit/ef1ad325d7251a8aedd08c19161773cfed7ee5e3))
+
 ## 0.1.0 (2026-08-12)
 
 
