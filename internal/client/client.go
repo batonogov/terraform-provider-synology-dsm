@@ -74,6 +74,22 @@ type Client struct {
 	// lock — but GetShare must still never acquire shareMu, or the first mutation
 	// that reads before releasing would deadlock.
 	shareMu sync.Mutex
+	// reverseProxyMu serializes SYNO.Core.AppPortal.ReverseProxy mutations.
+	//
+	// Unlike share permissions, this API is not a whole-list "set": create,
+	// update, and delete each address a single entry. The lock is still required,
+	// for two reasons. First, DSM keeps all entries in one datastore
+	// (ReverseProxy.json) which it rewrites and re-renders into nginx on every
+	// mutation, so overlapping writes can drop an entry. Second, and unavoidably
+	// on the client side, create is not atomic here: DSM's create answers
+	// {"success":true} without a usable UUID, so the client must list before (to
+	// reject duplicates) and after (to learn the UUID). Terraform's default
+	// parallelism makes those windows overlap routinely.
+	//
+	// Reads stay outside the lock, and the internal helpers used inside a
+	// critical section (getReverseProxy, findReverseProxyByDescription) must
+	// never take it, or every mutation would deadlock on its own read-back.
+	reverseProxyMu sync.Mutex
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {

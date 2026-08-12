@@ -72,6 +72,19 @@ func TestAccPreCheckSystemSettings(t *testing.T) {
 	}
 }
 
+// TestAccPreCheckReverseProxy gates the reverse proxy acceptance tests.
+//
+// SYNO.Core.AppPortal.ReverseProxy is undocumented and this provider's contract
+// for it was reconstructed rather than captured first-hand, so these tests are
+// opt-in: they write real nginx configuration and restart the DSM web service.
+// Set DSM_ACC_REVERSE_PROXY=1 against a NAS where that is acceptable.
+func TestAccPreCheckReverseProxy(t *testing.T) {
+	TestAccPreCheck(t)
+	if os.Getenv("DSM_ACC_REVERSE_PROXY") != "1" {
+		t.Skip("skipping reverse proxy test: it rewrites the DSM reverse proxy configuration; set DSM_ACC_REVERSE_PROXY=1 to opt in")
+	}
+}
+
 // NewTestClient builds a logged-in DSM client from the acceptance-test
 // environment. Use it in CheckDestroy hooks that need to inspect DSM directly,
 // beyond what the Terraform state can tell.

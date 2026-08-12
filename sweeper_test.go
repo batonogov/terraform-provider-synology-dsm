@@ -46,6 +46,10 @@ func init() {
 		Name: "dsm_container_project",
 		F:    sweepContainerProjects,
 	})
+	resource.AddTestSweepers("dsm_reverse_proxy", &resource.Sweeper{
+		Name: "dsm_reverse_proxy",
+		F:    sweepReverseProxies,
+	})
 }
 
 // sweeperClient builds a logged-in client from the same environment the
@@ -129,6 +133,41 @@ func sweepContainerProjects(_ string) error {
 
 	if len(errs) > 0 {
 		return fmt.Errorf("sweep Container Manager projects: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func sweepReverseProxies(_ string) error {
+	c, err := sweeperClient()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+
+	entries, err := c.ListReverseProxies(ctx)
+	if err != nil {
+		// A DSM without the Application Portal reverse proxy API must not break
+		// the sweep of everything else.
+		if client.IsAPIError(err, 102, 103, 104) {
+			return nil
+		}
+		return fmt.Errorf("sweep reverse proxy entries: %w", err)
+	}
+
+	var errs []string
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Description, accTestPrefix) {
+			continue
+		}
+		if err := c.DeleteReverseProxy(ctx, entry.UUID); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", entry.Description, err))
+			continue
+		}
+		fmt.Printf("swept reverse proxy entry %s\n", entry.Description)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("sweep reverse proxy entries: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }

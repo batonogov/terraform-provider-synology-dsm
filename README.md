@@ -18,8 +18,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_container_project`](#dsm_container_project) | Manage Docker Compose projects in Container Manager |
 | [`dsm_file`](#dsm_file) | Upload configuration files into a shared folder |
 | [`dsm_system_settings`](#dsm_system_settings) | Manage the NAS time zone and NTP synchronisation |
+| [`dsm_reverse_proxy`](#dsm_reverse_proxy) | Publish a service through the DSM Login Portal reverse proxy |
 
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
@@ -534,6 +535,57 @@ resource "dsm_system_settings" "this" {
 # Or manage the time zone alone and leave NTP untouched.
 resource "dsm_system_settings" "timezone_only" {
   timezone = "Amsterdam"
+### `dsm_reverse_proxy`
+
+Manages an entry in Control Panel → Login Portal → Advanced → Reverse Proxy —
+the natural way to publish a Container Manager workload without running a second
+proxy alongside DSM.
+
+| Attribute                   | Type        | Required | Computed | Description                                                       |
+|-----------------------------|-------------|----------|----------|-------------------------------------------------------------------|
+| `id`                        | string      | -        | yes      | Entry UUID assigned by DSM                                        |
+| `description`               | string      | yes      | -        | Entry description; DSM's only human-readable handle, must be unique |
+| `source`                    | block       | yes      | -        | Public listener: `protocol`, `hostname`, `port`                    |
+| `destination`               | block       | yes      | -        | Upstream service: `protocol`, `hostname`, `port`                   |
+| `websocket`                 | bool        | -        | yes      | Add the `Upgrade`/`Connection` header pair. Defaults to `false`.    |
+| `http2`                     | bool        | -        | yes      | Enable HTTP/2 on the listener. Defaults to `false`.                |
+| `hsts`                      | bool        | -        | yes      | Send `Strict-Transport-Security`. Defaults to `false`.             |
+| `custom_headers`            | map(string) | -        | -        | Extra request headers, e.g. the `X-Forwarded-*` family             |
+| `access_control_profile`    | string      | -        | -        | Name of an existing Login Portal access control profile            |
+| `access_control_profile_id` | string      | -        | yes      | UUID of the applied profile                                        |
+| `proxy_connect_timeout`     | number      | -        | yes      | Connect timeout in seconds. Defaults to `60`.                      |
+| `proxy_read_timeout`        | number      | -        | yes      | Read timeout in seconds. Defaults to `60`.                         |
+| `proxy_send_timeout`        | number      | -        | yes      | Send timeout in seconds. Defaults to `60`.                         |
+| `proxy_intercept_errors`    | bool        | -        | yes      | Replace upstream errors with DSM error pages. Defaults to `false`. |
+
+```hcl
+resource "dsm_reverse_proxy" "nextcloud" {
+  description = "Nextcloud"
+
+  source {
+    protocol = "HTTPS"
+    hostname = "cloud.example.com"
+    port     = 443
+  }
+
+  destination {
+    protocol = "HTTP"
+    hostname = "localhost"
+    port     = 8080
+  }
+
+  websocket = true
+  http2     = true
+  hsts      = true
+
+  custom_headers = {
+    "X-Forwarded-Proto" = "$scheme"
+    "X-Forwarded-Host"  = "$host"
+    "X-Forwarded-For"   = "$proxy_add_x_forwarded_for"
+    "X-Real-IP"         = "$remote_addr"
+  }
+
+  access_control_profile = "internal-only"
 }
 ```
 
@@ -580,6 +632,34 @@ terraform import dsm_system_settings.this system_settings
 > **Writes may require the built-in `admin` account.** `SYNO.Core.Region.NTP` has
 > been reported to answer error 119 for other administrator accounts, the same
 > restriction as `dsm_user_home_service`.
+# UUID and description are both accepted.
+terraform import dsm_reverse_proxy.nextcloud 1b0d0c30-9e1f-4a2b-8f7e-2c9d1a5b7e40
+```
+
+> **`description` is the identity, `id` is the key.** DSM has no name field for
+> reverse proxy entries: the UI's "Description" is the `description` field, and
+> DSM identifies entries by the UUID it assigns. Descriptions must be unique —
+> the provider refuses to create a second entry with one that already exists.
+
+> **`websocket` and `custom_headers` share one DSM list.** DSM stores both in
+> `customize_headers`; `websocket = true` prepends the same pair DSM's own
+> WebSocket preset uses. Do not also set `Upgrade` or `Connection` by hand.
+
+> **Certificates are a separate concern.** An `HTTPS` source needs a certificate
+> bound to it in Control Panel → Security → Certificate. This provider does not
+> manage certificates.
+
+> **Access control profiles are not created here.** Reference an existing
+> profile by name; the provider resolves it to the UUID DSM stores.
+
+> **The API is undocumented.** `SYNO.Core.AppPortal.ReverseProxy` is not in
+> Synology's developer guide. The wire contract used here was reconstructed from
+> published DSM 7.x captures and independent working clients, and is covered by
+> unit tests that assert the exact request payload. The `http2` flag in
+> particular is inferred rather than observed: it is only sent when enabled, and
+> a DSM build that does not report it back keeps the configured value instead of
+> producing a permanent diff. Acceptance tests for this resource are opt-in
+> behind `DSM_ACC_REVERSE_PROXY=1`.
 
 ## Data sources
 
@@ -597,6 +677,7 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_package`            | `name`                                             | `id`, `display_name`, `version`, `status`, `running`, `description`, `maintainer`, `can_uninstall` |
 | `dsm_container_project`  | `name`                                             | `id`, `share_path`, `compose_yaml`, `running`, `path`, `status`, `container_ids` |
 | `dsm_system_settings`    | — (singleton)                                      | `id`, `timezone`, `ntp_enabled`, `ntp_server`, `current_date`, `current_time`, `timestamp` |
+| `dsm_reverse_proxy`      | `description`                                      | `id`, `source_protocol`, `source_hostname`, `source_port`, `destination_protocol`, `destination_hostname`, `destination_port`, `websocket`, `http2`, `hsts`, `custom_headers`, `access_control_profile`, `access_control_profile_id`, `proxy_connect_timeout`, `proxy_read_timeout`, `proxy_send_timeout`, `proxy_intercept_errors` |
 
 ## Development
 
