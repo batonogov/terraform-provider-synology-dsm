@@ -1,12 +1,16 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 func TestSharedFolderErrorDetail(t *testing.T) {
@@ -79,4 +83,65 @@ func TestTerraformIdentifier(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSharedFolderValidateConfig_DescriptionLength covers #65: DSM caps a share
+// description at 64 characters and refuses anything longer with a bare 3300,
+// which reads as a concurrency problem. Catching it at plan time is the point.
+func TestSharedFolderValidateConfig_DescriptionLength(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		wantError   bool
+	}{
+		{"empty", "", false},
+		{"at the limit", strings.Repeat("a", 64), false},
+		{"one over", strings.Repeat("a", 65), true},
+		// The limit counts characters, not bytes: 64 Cyrillic characters are
+		// 128 bytes and DSM accepts them.
+		{"64 cyrillic characters are 128 bytes and fine", strings.Repeat("я", 64), false},
+		{"65 cyrillic characters", strings.Repeat("я", 65), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewSharedFolderResource().(*sharedFolderResource)
+			resp := &resource.ValidateConfigResponse{}
+			r.ValidateConfig(t.Context(), resource.ValidateConfigRequest{
+				Config: sharedFolderConfigWithDescription(t, tt.description),
+			}, resp)
+
+			if got := resp.Diagnostics.HasError(); got != tt.wantError {
+				t.Fatalf("HasError = %v, want %v: %v", got, tt.wantError, resp.Diagnostics)
+			}
+			if tt.wantError && !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "64 characters") {
+				t.Errorf("the error should state the limit, got: %s", resp.Diagnostics.Errors()[0].Detail())
+			}
+		})
+	}
+}
+
+// sharedFolderConfigWithDescription builds a minimal valid config carrying the
+// given description, so the length rule can be exercised on its own.
+func sharedFolderConfigWithDescription(t *testing.T, description string) tfsdk.Config {
+	t.Helper()
+
+	sch := sharedFolderSchema(t).Schema
+	objType := sch.Type().TerraformType(context.Background()).(tftypes.Object)
+
+	values := map[string]tftypes.Value{}
+	for name, typ := range objType.AttributeTypes {
+		switch name {
+		case "name":
+			values[name] = tftypes.NewValue(tftypes.String, "team-data")
+		case "vol_path":
+			values[name] = tftypes.NewValue(tftypes.String, "/volume1")
+		case "description":
+			values[name] = tftypes.NewValue(tftypes.String, description)
+		default:
+			values[name] = tftypes.NewValue(typ, nil)
+		}
+	}
+
+	return tfsdk.Config{Schema: sch, Raw: tftypes.NewValue(objType, values)}
 }

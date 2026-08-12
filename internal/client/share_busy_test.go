@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,11 +58,26 @@ func busyShareServer(t *testing.T, code int, failCount int32) (*Client, *httptes
 
 // TestCreateShare_RetriesBusyCodes is the regression for the reported failure:
 // three shares in one apply, two rejected with 3328 while the third succeeded.
+//
+// The two codes get different budgets on purpose. 3328 only ever means "another
+// mutation is in flight", so it is waited out in full. 3300 is DSM's catch-all
+// refusal — it also answers a malformed request (issue #65) — so it is retried
+// just enough to ride out settling.
 func TestCreateShare_RetriesBusyCodes(t *testing.T) {
-	for _, code := range shareBusyCodes {
-		t.Run(fmt.Sprintf("code %d", code), func(t *testing.T) {
+	tests := []struct {
+		name          string
+		code          int
+		failures      int32
+		wantMutations int32
+	}{
+		{"3328 rides out the full budget", shareConcurrentMutationCode, 4, 5},
+		{"3300 is retried briefly", shareGeneralRejectionCode, 1, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			shrinkShareBusyBackoff(t)
-			c, server, mutations := busyShareServer(t, code, 2)
+			c, server, mutations := busyShareServer(t, tt.code, tt.failures)
 			defer server.Close()
 
 			share, err := c.CreateShare(context.Background(), CreateShareRequest{Name: "tfacctest", VolPath: "/volume1"})
@@ -73,10 +87,32 @@ func TestCreateShare_RetriesBusyCodes(t *testing.T) {
 			if share == nil {
 				t.Fatal("expected the share to be read back")
 			}
-			if got := mutations.Load(); got != 3 {
-				t.Errorf("expected 2 rejected attempts then success (3 total), got %d", got)
+			if got := mutations.Load(); got != tt.wantMutations {
+				t.Errorf("expected %d attempts, got %d", tt.wantMutations, got)
 			}
 		})
+	}
+}
+
+// TestCreateShare_StopsRetrying3300Quickly is the regression for #65: a share
+// rejected for an over-long description will never be accepted, so spending the
+// whole busy budget on it only delays the error the user has to act on.
+func TestCreateShare_StopsRetrying3300Quickly(t *testing.T) {
+	shrinkShareBusyBackoff(t)
+	c, server, mutations := busyShareServer(t, shareGeneralRejectionCode, 99)
+	defer server.Close()
+
+	_, err := c.CreateShare(context.Background(), CreateShareRequest{Name: "tfacctest", VolPath: "/volume1"})
+	if !IsAPIError(err, shareGeneralRejectionCode) {
+		t.Fatalf("expected the 3300 to surface, got: %v", err)
+	}
+	if got := int(mutations.Load()); got != shareGeneralRejectionAttempts {
+		t.Errorf("expected %d attempts for an ambiguous 3300, got %d", shareGeneralRejectionAttempts, got)
+	}
+	// The wording must not commit to the concurrency story, which is what sent
+	// the reporter of #65 looking for a race that was not there.
+	if strings.Contains(err.Error(), "still settling an earlier share operation;") {
+		t.Errorf("3300 must not be described as purely transient: %v", err)
 	}
 }
 
