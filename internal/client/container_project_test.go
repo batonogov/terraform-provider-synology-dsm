@@ -334,8 +334,9 @@ func TestReadContainerProjectActionStream_ReturnsAPIError(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader("data: {\"success\":false,\"error\":{\"code\":105}}\n")),
 	}
-	if err := readContainerProjectActionStream(response); err == nil || !strings.Contains(err.Error(), "api error 105") {
-		t.Fatalf("expected streamed API error, got %v", err)
+	err := readContainerProjectActionStream(response)
+	if !IsAPIError(err, 105) {
+		t.Fatalf("expected streamed API error 105, got %v", err)
 	}
 }
 

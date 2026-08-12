@@ -160,8 +160,8 @@ func TestContainerProjectErrorDetail(t *testing.T) {
 	}{
 		{errors.Join(client.ErrContainerProjectNotFound, errors.New(`"missing"`)), []string{"missing", "imported"}},
 		{errors.New("project already exists"), []string{"already exists", "Import"}},
-		{errors.New("api error 103: method unavailable"), []string{"ContainerManager", "Virtual DSM"}},
-		{errors.New("api error 105: denied"), []string{"administrator", "shared folder"}},
+		{&client.APIError{Code: 103, API: "SYNO.Docker.Project"}, []string{"ContainerManager", "Virtual DSM"}},
+		{&client.APIError{Code: 105, API: "SYNO.Docker.Project"}, []string{"administrator", "shared folder"}},
 		{errors.New("connection refused"), []string{"connection refused"}},
 	}
 	for _, tt := range tests {

@@ -334,7 +334,7 @@ func (c *Client) checkPackageInstall(ctx context.Context, pkg PackageCatalogItem
 		// Several DSM 7 builds reject the advisory check unless Package Center
 		// has cached extra UI metadata. The queue/install calls remain the real
 		// gate, so tolerate only the known method/parameter/catalog errors.
-		if isPackageAPIError(err, 103, 104, 114, 120) {
+		if IsAPIError(err, 103, 104, 114, 120) {
 			return requestedVolume, nil
 		}
 		return "", fmt.Errorf("check package %q installation: %w", pkg.ID, err)
@@ -625,17 +625,4 @@ func setPackageRawParam(params url.Values, name string, raw json.RawMessage) {
 	if value != "" && value != "null" {
 		params.Set(name, value)
 	}
-}
-
-func isPackageAPIError(err error, codes ...int) bool {
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	for _, code := range codes {
-		if apiErr.Code == code {
-			return true
-		}
-	}
-	return false
 }

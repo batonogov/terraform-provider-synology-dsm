@@ -2,9 +2,11 @@ package provider
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
@@ -169,17 +171,17 @@ func TestUserHomeErrorDetail(t *testing.T) {
 	}{
 		{
 			name:        "3101 points at the volume path format",
-			err:         errors.New("set user home service: api error 3101: synology api error: code 3101"),
-			wantContain: []string{"3101", "/volume1", "not `volume1`"},
+			err:         fmt.Errorf("set user home service: %w", &client.APIError{Code: 3101, API: "SYNO.Core.User.Home"}),
+			wantContain: []string{"3101", "/volume1", "volume path"},
 		},
 		{
 			name:        "3103 names the missing parameter",
-			err:         errors.New("set user home service: api error 3103: synology api error: code 3103"),
-			wantContain: []string{"3103", "`location`", "missing"},
+			err:         fmt.Errorf("set user home service: %w", &client.APIError{Code: 3103, API: "SYNO.Core.User.Home"}),
+			wantContain: []string{"3103", "`location`", "required"},
 		},
 		{
 			name:        "119 mentions the built-in admin requirement",
-			err:         errors.New("get user home service: api error 119: synology api error: code 119"),
+			err:         fmt.Errorf("get user home service: %w", &client.APIError{Code: 119, API: "SYNO.Core.User.Home"}),
 			wantContain: []string{"119", "built-in `admin`", "Control Panel"},
 		},
 		{
