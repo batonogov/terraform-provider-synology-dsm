@@ -2,6 +2,7 @@
 
 A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, files in shared folders, users, groups, shared folders, permissions, quotas, and per-user home folders.
 A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, users, groups, shared folders, permissions, quotas, per-user home folders, and Task Scheduler jobs.
+A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, Container Manager projects, files in shared folders, TLS certificates, users, groups, shared folders, permissions, quotas, and per-user home folders.
 
 Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.API.Auth` v7 with SynoToken). Developed and tested against DSM 7.2.2 and DSM 7.3.2.
 
@@ -23,8 +24,10 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_firewall_rule`](#dsm_firewall_rule) | Manage rules in a DSM firewall profile |
 | [`dsm_scheduled_task`](#dsm_scheduled_task) | Manage Task Scheduler script tasks (daily, weekly, monthly) |
 | [`dsm_event_task`](#dsm_event_task) | Manage tasks that run on boot or shutdown |
+| [`dsm_certificate`](#dsm_certificate) | Import an externally issued TLS certificate |
+| [`dsm_certificate_lets_encrypt`](#dsm_certificate_lets_encrypt) | Have DSM obtain a certificate from Let's Encrypt |
 
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects.
+Every resource except `dsm_file` and the two certificate resources has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects. Certificates are covered by the plural `dsm_certificates` data source, which lists them.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
@@ -698,9 +701,12 @@ terraform import dsm_reverse_proxy.nextcloud 1b0d0c30-9e1f-4a2b-8f7e-2c9d1a5b7e4
 > `customize_headers`; `websocket = true` prepends the same pair DSM's own
 > WebSocket preset uses. Do not also set `Upgrade` or `Connection` by hand.
 
-> **Certificates are a separate concern.** An `HTTPS` source needs a certificate
-> bound to it in Control Panel → Security → Certificate. This provider does not
-> manage certificates.
+> **Certificates are a separate resource.** An `HTTPS` source needs a
+> certificate, which [`dsm_certificate`](#dsm_certificate) and
+> [`dsm_certificate_lets_encrypt`](#dsm_certificate_lets_encrypt) can install —
+> but *binding* one to this particular reverse proxy entry is still a manual
+> step in Control Panel → Security → Certificate → Settings. Only the DSM-wide
+> default is settable from Terraform (`set_as_default`).
 
 > **Access control profiles are not created here.** Reference an existing
 > profile by name; the provider resolves it to the UUID DSM stores.
@@ -847,6 +853,146 @@ terraform import dsm_event_task.on_boot restore-mounts
 > **The name is the identity.** DSM addresses event tasks by name and assigns no
 > id, so changing `name` destroys and recreates the task.
 
+### `dsm_certificate`
+
+Imports a certificate issued elsewhere — an internal CA, Vault, ACM, or a file
+on disk. This is the resource for a NAS that must not talk to Let's Encrypt,
+and for the wildcard certificate a whole estate already shares.
+
+| Attribute           | Type         | Required | Computed | Description                                                                     |
+|---------------------|--------------|----------|----------|---------------------------------------------------------------------------------|
+| `id`                | string       | -        | yes      | Certificate id assigned by DSM (a short opaque string)                          |
+| `description`       | string       | yes      | -        | Name shown in Control Panel > Security > Certificate                            |
+| `certificate`       | string       | yes      | -        | PEM certificate, leaf first (sensitive)                                         |
+| `private_key`       | string       | yes      | -        | PEM private key, unencrypted (sensitive)                                        |
+| `intermediate`      | string       | -        | -        | PEM intermediate chain (sensitive)                                              |
+| `set_as_default`    | bool         | -        | yes      | Make this the DSM default certificate. Defaults to `false`                      |
+| `force_destroy`     | bool         | -        | yes      | Allow destroy while services are still assigned. Defaults to `false`            |
+| `expires_at`        | string       | -        | yes      | Expiry, RFC 3339 UTC, parsed from the certificate itself                        |
+| `subject`           | string       | -        | yes      | Subject common name                                                             |
+| `subject_alt_names` | list(string) | -        | yes      | Subject alternative names                                                       |
+| `issuer`            | string       | -        | yes      | Issuer common name                                                              |
+| `is_default`        | bool         | -        | yes      | Whether DSM currently treats this as the default certificate                    |
+| `self_signed`       | bool         | -        | yes      | Whether the certificate issued itself                                           |
+| `services`          | list(string) | -        | yes      | DSM service identifiers currently served by this certificate                    |
+
+```hcl
+resource "dsm_certificate" "wildcard" {
+  description = "wildcard.example.com"
+
+  certificate  = file("cert.pem")
+  private_key  = file("key.pem")
+  intermediate = file("chain.pem")
+
+  set_as_default = true
+}
+
+output "wildcard_expires_at" {
+  value = dsm_certificate.wildcard.expires_at
+}
+```
+
+```bash
+terraform import dsm_certificate.wildcard K3xR9a
+```
+
+> **The private key is stored in state in clear text.** Terraform redacts it
+> from plan output, but state is not encrypted, and DSM never returns a private
+> key so it cannot be re-read either. Use an encrypted remote state backend,
+> restrict access to it, and rotate the key if state ever leaks.
+
+> **`expires_at` comes from the certificate, not from DSM.** It is parsed out of
+> the DER with `crypto/x509`, so it is exactly what a client will see and does
+> not depend on how a given DSM version formats a date. This is the attribute to
+> alert on.
+
+> **Destroy refuses while a service still uses the certificate.** Removing it
+> would leave that service without TLS, so destroy fails and names the services
+> plus the ways out: reassign them in DSM, replace the certificate in place,
+> `terraform state rm`, or `force_destroy = true` to accept the consequence.
+
+> **Rotation is an in-place update.** Changing `certificate` and `private_key`
+> re-imports under the same DSM id, so the service assignments survive. Do that
+> rather than destroying and recreating.
+
+> **After `terraform import` the key material is missing from state**, because
+> DSM does not return it. The first apply re-uploads whatever the configuration
+> holds, in place and under the same id.
+
+### `dsm_certificate_lets_encrypt`
+
+Has DSM obtain the certificate over ACME. Nothing secret reaches Terraform: the
+key is generated on the NAS, stays there, and DSM renews it on its own schedule.
+
+| Attribute           | Type         | Required | Computed | Description                                                                     |
+|---------------------|--------------|----------|----------|---------------------------------------------------------------------------------|
+| `id`                | string       | -        | yes      | Certificate id assigned by DSM                                                  |
+| `description`       | string       | -        | yes      | Name shown in the certificate control panel. Defaults to `domain`               |
+| `domain`            | string       | yes      | -        | Primary domain; becomes the common name. Forces replacement                     |
+| `alt_names`         | set(string)  | -        | yes      | Additional subject alternative names. Forces replacement                        |
+| `email`             | string       | yes      | -        | Contact address for the ACME account. Not readable from DSM; see below          |
+| `set_as_default`    | bool         | -        | yes      | Make this the DSM default certificate. Defaults to `false`                      |
+| `force_destroy`     | bool         | -        | yes      | Allow destroy while services are still assigned. Defaults to `false`            |
+| `expires_at`        | string       | -        | yes      | Expiry, RFC 3339 UTC, as reported by DSM                                        |
+| `subject`           | string       | -        | yes      | Subject common name                                                             |
+| `subject_alt_names` | list(string) | -        | yes      | Subject alternative names in the issued certificate                             |
+| `issuer`            | string       | -        | yes      | Issuer common name                                                              |
+| `is_default`        | bool         | -        | yes      | Whether DSM currently treats this as the default certificate                    |
+| `renewable`         | bool         | -        | yes      | Whether DSM can renew it automatically                                          |
+| `services`          | list(string) | -        | yes      | DSM service identifiers currently served by this certificate                    |
+
+```hcl
+resource "dsm_certificate_lets_encrypt" "cloud" {
+  description = "cloud.example.com"
+  domain      = "cloud.example.com"
+  alt_names   = ["s3.example.com"]
+  email       = "admin@example.com"
+
+  set_as_default = true
+}
+```
+
+```bash
+terraform import dsm_certificate_lets_encrypt.cloud LeAbc1
+```
+
+> **Issuance depends on the outside world and is slow.** Let's Encrypt validates
+> every name over the public internet, so each must resolve to this NAS and
+> inbound TCP/80 must reach it. DSM runs the whole ACME exchange inside a single
+> request and answers only when it is done, so `apply` blocks for tens of
+> seconds and occasionally minutes. There is no task to poll and no progress.
+
+> **Failures are explained, not passed through as a code.** DSM answers with a
+> number; the provider renders it (5521 "port 80 does not reach the NAS", 5524
+> "rate limit for this domain", 5529 "not publicly resolvable") and attaches the
+> full list of conditions that have to hold.
+
+> **Issuance is rate limited.** Let's Encrypt allows a limited number of
+> certificates per registered domain per week, so a failed apply is expensive.
+> Iterate with `terraform apply -target` until DNS and the firewall are right.
+> DSM hardcodes the production ACME directory: there is no staging option.
+
+> **`expires_at` is the renewal alarm.** It moves forward on every DSM renewal,
+> so an `expires_at` that stops advancing means renewal has stopped working.
+> Unlike `dsm_certificate` this value comes from DSM, since no PEM ever reaches
+> Terraform.
+
+> **`email` cannot be read back.** DSM does not report the ACME contact address,
+> so it is absent from state after an import and is deliberately *not* a
+> replace-forcing attribute: an attribute that can never be refreshed must not be
+> able to trigger a destroy. Changing it records the new value and warns that it
+> takes effect at the next issuance.
+
+> **Import restores `domain` and `alt_names` from the certificate itself**, so
+> the first plan after an import is clean rather than a forced reissue.
+> `alt_names` is a set, so the order in the configuration does not matter.
+
+> **Per-service assignment is not managed.** Both certificate resources can
+> claim the DSM-wide default (`set_as_default`) and report which services use
+> them (`services`), but binding an individual service to a certificate
+> (`SYNO.Core.Certificate.Service`) is not implemented yet — do it in Control
+> Panel > Security > Certificate > Settings.
+
 ## Data sources
 
 Each resource has a read-only data source counterpart that takes the identifying
@@ -872,6 +1018,26 @@ Both task data sources are read-only and are **not** gated behind
 `allow_task_execution`: reading a task executes nothing, and being able to audit
 what a NAS already runs unattended is useful precisely in the configurations
 that keep the resources switched off.
+
+Certificates are the exception: `dsm_certificates` (plural) lists them instead
+of looking one up, with an optional `description` filter.
+
+```hcl
+data "dsm_certificates" "all" {}
+
+output "expiring_soon" {
+  value = [
+    for c in data.dsm_certificates.all.certificates : c
+    if c.expires_at != null && timecmp(c.expires_at, timeadd(timestamp(), "720h")) < 0
+  ]
+}
+```
+
+Each entry carries `id`, `description`, `subject`, `subject_alt_names`,
+`issuer`, `expires_at`, `is_default`, `self_signed`, `renewable`, and
+`services`. It covers certificates Terraform does not manage — the self-signed
+one DSM ships with, or anything installed by hand — which is exactly the set
+most likely to expire unnoticed.
 
 ## Development
 

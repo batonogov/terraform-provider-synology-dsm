@@ -98,6 +98,36 @@ var apiSpecificErrors = map[string]map[int]string{
 		4151: "the reverse proxy entry is missing or was not sent as a JSON-encoded string",
 		4154: "a reverse proxy entry with this description already exists",
 	},
+	// The 55xx family belongs to certificate handling. The wording comes from
+	// DSM's own webman translation strings, which two independent clients
+	// extracted byte-identically; 5510, 5512, and 5517 are additionally confirmed
+	// by acme.sh bug reports against real hardware.
+	"SYNO.Core.Certificate": {
+		5510: "the certificate file is not a valid certificate",
+		5511: "the private key file is not a valid private key",
+		5512: "the intermediate certificate file is not valid",
+		5513: "the certificate uses an unsupported cipher",
+		5514: "the private key does not match the certificate",
+		5515: "the certificate was not issued by a trusted authority",
+		5516: "the uploaded file must be UTF-8 encoded",
+		5517: "the certificate could not be verified against the supplied intermediate chain",
+		5518: "DSA keys are not supported",
+		5519: "the certificate signing request is invalid",
+		5534: "the key is too short: DSM requires more than 1024 bits",
+	},
+	"SYNO.Core.Certificate.LetsEncrypt": {
+		5520: "no response from the Let's Encrypt server",
+		5521: "Let's Encrypt could not validate the domain, usually because inbound TCP/80 does not reach this NAS",
+		5522: "the issuer could not validate the domain",
+		5523: "too many ACME accounts have been registered from this IP address",
+		5524: "too many certificates have been requested for this domain recently (a Let's Encrypt rate limit)",
+		5525: "the email address is invalid",
+		5526: "a parameter value is invalid",
+		5527: "the Let's Encrypt server is busy",
+		5528: "wildcard certificates are only supported for Synology DDNS domains",
+		5529: "the domain is not publicly resolvable",
+		5530: "the domain could not be reached: check the public IP address, any reverse proxy, and the firewall",
+	},
 }
 
 // describeAPIError resolves a code to a sentence, preferring the API-specific
