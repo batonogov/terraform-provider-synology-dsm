@@ -39,6 +39,8 @@ resource "dsm_container_project" "object_storage" {
 ### Required
 
 - `compose_yaml` (String, Sensitive) Docker Compose YAML managed by Container Manager. Sensitive output is redacted, but the value is still stored in Terraform state; use an encrypted remote state backend and avoid embedding long-lived secrets.
+
+**Relative bind mounts do not work the way plain Docker leads you to expect.** A mount such as `./conf:/conf` fails the build with `Bind mount failed: '/volume1/.../conf' does not exist`, because Container Manager does not create host directories. Use a named volume, point the mount at a path that already exists, or create the file with `dsm_file` first — which also keeps configuration and secrets out of the compose document.
 - `name` (String) Unique Container Manager project name.
 - `share_path` (String) File Station path for the project directory, for example `/docker/s3-storage`. This is not an absolute volume path such as `/volume1/docker/s3-storage`.
 
