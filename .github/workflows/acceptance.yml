@@ -1,0 +1,127 @@
+name: Acceptance Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_file_tests:
+        description: "Run dsm_file acceptance tests (File Station)"
+        type: boolean
+        default: true
+      run_gated_tests:
+        description: "Run gated acceptance tests (quota, container, system, reverse_proxy, task)"
+        type: boolean
+        default: false
+  schedule:
+    # Every Sunday at 03:00 UTC — low-cost weekly baseline check
+    - cron: '0 3 * * 0'
+
+concurrency:
+  group: acceptance-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  acceptance:
+    name: Virtual DSM Acceptance Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build provider
+        run: go build -trimpath -o bin/terraform-provider-synology-dsm .
+
+      # ── Bring up virtual DSM ──────────────────────────────────────
+      # Cold start takes 10-20 minutes on QEMU emulation; the wait
+      # script polls the API entry point for up to 20 minutes.
+      - name: Start virtual DSM
+        run: |
+          docker compose -f docker-compose.test.yml up -d
+          echo "Container started, waiting for DSM API..."
+
+      - name: Wait for DSM
+        run: bash scripts/wait-for-dsm.sh
+        env:
+          DSM_HOST: http://localhost:5000
+          DSM_TIMEOUT: "1200"
+
+      # ── Sweep leftover test resources ────────────────────────────
+      # Only the root package registers sweepers; do NOT use ./...
+      - name: Sweep leftover test resources
+        run: go test . -sweep=all -timeout 10m
+        env:
+          TF_ACC: "1"
+          SYNOLOGY_DSM_HOST: http://localhost:5000
+          SYNOLOGY_DSM_USERNAME: admin
+          SYNOLOGY_DSM_PASSWORD: ""
+
+      # ── Run acceptance tests ─────────────────────────────────────
+      # File Station tests run by default. Gated tests (quota, container
+      # manager, system settings, reverse proxy, task scheduler) require
+      # explicit opt-in via DSM_ACC_* env vars.
+      - name: Run acceptance tests
+        run: |
+          ARGS=""
+          if [ "${{ inputs.run_file_tests || true }}" = "true" ]; then
+            ARGS="$ARGS -DSM_ACC_FILE=1"
+          fi
+          if [ "${{ inputs.run_gated_tests || false }}" = "true" ]; then
+            ARGS="$ARGS -DSM_ACC_QUOTA=1 -DSM_ACC_CONTAINER=1 -DSM_ACC_SYSTEM=1 -DSM_ACC_REVERSE_PROXY=1 -DSM_ACC_TASK=1"
+          fi
+          TF_ACC=1 go test -v -timeout 45m $ARGS ./...
+        env:
+          SYNOLOGY_DSM_HOST: http://localhost:5000
+          SYNOLOGY_DSM_USERNAME: admin
+          SYNOLOGY_DSM_PASSWORD: ""
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            // Check for an existing open issue to avoid duplicates
+            const { data: issues } = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: ['acceptance'],
+              per_page: 1,
+            });
+            const body = [
+              '## Acceptance test failure',
+              '',
+              `**Run:** ${runUrl}`,
+              '',
+              'The acceptance test suite failed against virtual DSM. Check the workflow logs for details.',
+              '',
+              '## Next steps',
+              '1. Download the workflow logs',
+              '2. Reproduce locally: `task test-env-up && task test-acc`',
+              '3. Fix the failing test',
+              '4. Re-run this workflow to confirm',
+            ].join('\n');
+            if (issues.length > 0) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: issues[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title: `Acceptance tests failed (${new Date().toISOString().slice(0, 10)})`,
+                body,
+                labels: ['acceptance', 'bug'],
+              });
+            }
+
+      - name: Tear down virtual DSM
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
