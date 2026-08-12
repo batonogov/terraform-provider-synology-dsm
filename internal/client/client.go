@@ -61,6 +61,11 @@ type Client struct {
 	// reads the full list, mutates one entry, and writes it back, so concurrent
 	// writers clobber each other. See SetSharePermission / SetUserQuota.
 	mu sync.Mutex
+	// packageMu serializes Package Center install and uninstall operations.
+	// DSM exposes a single global package queue and rejects overlapping changes
+	// as "Package Center is busy". Keep this separate from mu because package
+	// operations may take minutes while share permission updates are unrelated.
+	packageMu sync.Mutex
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {

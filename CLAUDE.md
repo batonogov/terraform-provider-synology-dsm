@@ -23,7 +23,7 @@ Terraform provider for Synology DSM using Plugin Framework. Two layers:
 
 **`internal/client/`** — Synology DSM HTTP API client
 - `client.go`: Auth (SYNO.API.Auth v7), session management (SID + SynoToken), `DoAPI()` for GET requests, `DoAPIPost()` for POST requests (SID/SynoToken in query string, other params in body), retry with exponential backoff
-- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`: CRUD methods per resource
+- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`, `package.go`: CRUD/lifecycle methods per resource
 
 **`internal/provider/`** — Terraform Plugin Framework wiring
 - `provider.go`: Provider schema (host/username/password/insecure), Configure creates client and logs in
@@ -56,6 +56,7 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 - **User `get` returns minimal data without `additional`** — only `name` and `uid`. To get `description`, `email`, `disabled`, `groups` use `list` method with `additional=["description","email","disabled","groups"]` and filter by name.
 - **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
 - **Simple resources** (user, group): all CRUD via `DoAPI()` (GET). Delete sends name as JSON array.
+- **Packages**: installed state comes from `SYNO.Core.Package.list` v2 with lifecycle fields nested under `additional`. Installation follows Package Center's queue flow (`SYNO.Core.Package.Server.list` → `SYNO.Core.Package.Installation.get_queue` → `install` → poll); start/stop uses `SYNO.Core.Package.Control`. Package removal is opt-in in the Terraform resource.
 - **Shared folder**: create (`method=create`) and update (`method=set`) via `DoAPIPost()` (POST) with `shareinfo` JSON — no `name_org`, which DSM rejects with 3301. Get/list/delete via `DoAPI()` (GET). API returns `enable_recycle_bin` (not `recyclebin`) and `quota_value` (written as `share_quota`).
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
 
@@ -168,4 +169,4 @@ TF_ACC=1 go test -v -timeout 30m ./...
 
 ## Roadmap
 
-Remaining gaps from `.pi/audit-scenario-gap.md` targeted for 0.1.0: a `dsm_group_member` resource for atomic membership, the missing `dsm_user` fields (`expire_date`, 2FA, allowed IPs), per-share NFS rules (`SYNO.Core.FileServ.NFS.SharePrivilege`) and the global protocol services (`SYNO.Core.FileServ.SMB`/`NFS`/`FTP`), plus share encryption. Then: Synology Drive → Photos.
+Remaining gaps from `.pi/audit-scenario-gap.md`: a `dsm_group_member` resource for atomic membership, per-share NFS rules (`SYNO.Core.FileServ.NFS.SharePrivilege`) and the global protocol services (`SYNO.Core.FileServ.SMB`/`NFS`/`FTP`), share encryption, Container Manager projects, reverse proxy, and certificates. Then: Synology Drive → Photos.

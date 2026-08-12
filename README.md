@@ -1,6 +1,6 @@
 # terraform-provider-synology-dsm
 
-A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as a corporate file cloud — provision users, groups, shared folders, share permissions, user quotas, and per-user home folders as Infrastructure as Code.
+A Terraform provider for managing [Synology DSM](https://www.synology.com/en-global/dsm) as Infrastructure as Code — provision packages, users, groups, shared folders, permissions, quotas, and per-user home folders.
 
 Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.API.Auth` v7 with SynoToken). Developed and tested against DSM 7.2.2 and DSM 7.3.2.
 
@@ -14,8 +14,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_share_permission`](#dsm_share_permission) | Manage share-level access (R/W/deny) for users and groups |
 | [`dsm_user_quota`](#dsm_user_quota) | Manage per-user quotas on a shared folder |
 | [`dsm_user_home_service`](#dsm_user_home_service) | Enable per-user home folders (the `homes` shared folder) |
+| [`dsm_package`](#dsm_package) | Install and control Package Center packages |
 
-Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`) for reading existing objects.
+Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`) for reading existing objects.
 
 ## Requirements
 
@@ -66,6 +67,11 @@ provider "dsm" {
   username = "admin"
   password = var.dsm_password
   insecure = true # skip TLS verification for self-signed certs
+}
+
+resource "dsm_package" "container_manager" {
+  name   = "ContainerManager"
+  volume = "/volume1"
 }
 
 resource "dsm_group" "developers" {
@@ -310,6 +316,50 @@ terraform import dsm_user_home_service.homes user_home_service
 > **Requires the built-in `admin` account.** `SYNO.Core.User.Home` answers error
 > 119 for other administrator accounts even when the session is valid.
 
+### `dsm_package`
+
+Installs a package from the repositories configured in DSM Package Center and
+controls whether it is running. If the package is already installed, the
+resource adopts it instead of attempting another installation.
+
+| Attribute              | Type   | Required | Computed | Description                                                      |
+|------------------------|--------|----------|----------|------------------------------------------------------------------|
+| `id`                   | string | -        | yes      | Package Center identifier                                        |
+| `name`                 | string | yes      | -        | Package identifier, e.g. `ContainerManager`. Forces replacement. |
+| `volume`               | string | -        | yes      | Installation volume path. Defaults to `/volume1`.                |
+| `running`              | bool   | -        | yes      | Desired running state. Defaults to `true`.                       |
+| `uninstall_on_destroy` | bool   | -        | yes      | Uninstall on destroy. Defaults to `false`.                       |
+| `display_name`         | string | -        | yes      | Human-readable package name                                      |
+| `version`              | string | -        | yes      | Installed version                                                |
+| `status`               | string | -        | yes      | Raw DSM lifecycle status                                         |
+| `description`          | string | -        | yes      | Package description                                              |
+| `maintainer`           | string | -        | yes      | Package maintainer                                               |
+| `can_uninstall`        | bool   | -        | yes      | Whether DSM allows the package to be uninstalled                 |
+
+```hcl
+resource "dsm_package" "container_manager" {
+  name   = "ContainerManager"
+  volume = "/volume1"
+
+  # The safe default: removing this block does not uninstall the package.
+  uninstall_on_destroy = false
+}
+```
+
+```bash
+terraform import dsm_package.container_manager ContainerManager
+```
+
+> **Destroy is non-destructive by default.** With `uninstall_on_destroy = false`,
+> Terraform only removes the resource from state. Set it to `true` only when
+> package removal — including any package-specific configuration/data cleanup —
+> is intended. DSM may refuse to uninstall system packages.
+
+> **Package compatibility is model-specific.** A package must be visible in
+> Package Center for the exact NAS model and DSM version. Virtual DSM exposes
+> the package APIs and catalog but blocks package installation with error 103;
+> install acceptance testing therefore requires physical hardware.
+
 ## Data sources
 
 Each resource has a read-only data source counterpart that takes the identifying
@@ -323,6 +373,7 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_share_permission`   | `share_name`, `user_group_type`, `principal_name`  | `id`, `permission`                                  |
 | `dsm_user_quota`         | `share_name`, `username`                           | `id`, `quota_size`, `quota_used`                    |
 | `dsm_user_home_service`  | — (singleton)                                      | `id`, `enable`, `location`, `enable_recycle_bin`, `enable_domain`, `enable_ldap`, `encryption`, `personal_photo_enable` |
+| `dsm_package`            | `name`                                             | `id`, `display_name`, `version`, `status`, `running`, `description`, `maintainer`, `can_uninstall` |
 
 ## Development
 
@@ -372,6 +423,9 @@ TF_ACC=1 go test -v -timeout 30m ./...
   some APIs use that code for "not the built-in admin").
 - The user home service (`SYNO.Core.User.Home`) works fully on virtual DSM, so
   its acceptance tests run unconditionally.
+- Installed-package lookup/import can be tested on virtual DSM, but installing
+  a Package Center package is blocked there with error 103 and must be verified
+  on compatible physical hardware.
 
 ### Release flow
 
