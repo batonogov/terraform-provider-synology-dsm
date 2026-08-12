@@ -109,7 +109,7 @@ func sweepContainerProjects(_ string) error {
 	if err != nil {
 		// Ordinary virtual-DSM sweeps must keep working even though that target
 		// cannot install Container Manager.
-		if strings.Contains(err.Error(), "api error 102:") || strings.Contains(err.Error(), "api error 103:") {
+		if client.IsAPIError(err, 102, 103) {
 			return nil
 		}
 		return fmt.Errorf("sweep Container Manager projects: %w", err)
