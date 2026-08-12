@@ -74,7 +74,7 @@ func NewTestClient(t *testing.T) *client.Client {
 func TestAccProviderFactories() map[string]func() (tfprotov6.ProviderServer, error) {
 	return map[string]func() (tfprotov6.ProviderServer, error){
 		"dsm": func() (tfprotov6.ProviderServer, error) {
-			return providerserver.NewProtocol6(provider.New())(), nil
+			return providerserver.NewProtocol6(provider.New("test")())(), nil
 		},
 	}
 }

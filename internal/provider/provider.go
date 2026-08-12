@@ -14,15 +14,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-const (
-	providerVersion = "0.1.0"
-)
-
-func New() provider.Provider {
-	return &synologyProvider{}
+func New(version string) func() provider.Provider {
+	return func() provider.Provider {
+		return &synologyProvider{version: version}
+	}
 }
 
-type synologyProvider struct{}
+type synologyProvider struct {
+	version string
+}
 
 type synologyProviderModel struct {
 	Host     types.String `tfsdk:"host"`
@@ -33,12 +33,12 @@ type synologyProviderModel struct {
 
 func (p *synologyProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "dsm"
-	resp.Version = providerVersion
+	resp.Version = p.version
 }
 
 func (p *synologyProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provider for managing Synology DSM as a corporate file cloud.",
+		Description: "Provider for managing Synology DSM packages, Container Manager projects, users, groups, shared folders, permissions, quotas, and user home service.",
 		Attributes: map[string]schema.Attribute{
 			"host": schema.StringAttribute{
 				Required:    true,

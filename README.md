@@ -19,6 +19,8 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 
 Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`) for reading existing objects.
 
+Full generated reference documentation is available in [`docs/`](docs/index.md).
+
 ## Requirements
 
 - Terraform >= 1.0
@@ -33,7 +35,7 @@ Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_f
 terraform {
   required_providers {
     dsm = {
-      source  = "batonogov/dsm"
+      source  = "batonogov/synology-dsm"
       version = "0.1.0"
     }
   }
@@ -54,7 +56,7 @@ task install   # builds and installs into ~/.terraform.d/plugins/
 terraform {
   required_providers {
     dsm = {
-      source  = "batonogov/dsm"
+      source  = "batonogov/synology-dsm"
       version = "0.1.0"
     }
   }
@@ -484,6 +486,8 @@ task test           # run unit tests (go test -v -count=1 ./...)
 task test-acc       # sweep leftovers, then run acceptance tests (requires a reachable DSM)
 task sweep          # delete leftover acceptance-test resources without running tests
 task lint           # go vet ./...
+task docs           # format examples and regenerate Terraform Registry docs
+task docs:check     # validate examples and fail on stale generated docs
 task install        # build + install into ~/.terraform.d/plugins/ for local use
 task clean          # remove build artifacts and test cache
 ```
@@ -537,11 +541,12 @@ Releases are automated via **Release Please** + **GoReleaser**:
 1. All commits to `main` use [conventional commits](https://www.conventionalcommits.org/)
    (`feat:`, `fix:`, `docs:`, `ci:`, `deps:`, `breaking:`).
 2. Release Please opens and maintains a release PR with the changelog and version bump.
-3. Merging the release PR creates a GitHub Release and a git tag.
-4. GoReleaser builds binaries for all platforms and uploads them.
+3. Merging the release PR creates a draft GitHub Release and a git tag.
+4. GoReleaser builds, signs, verifies, and uploads the Registry artifacts.
+5. The workflow publishes the release only after verification succeeds.
 
 ```
-conventional commits → Release Please PR → merge → GitHub Release → GoReleaser → binaries
+conventional commits → Release Please PR → merge → draft release → signed artifacts → publish
 ```
 
 Never create tags manually — Release Please manages versions.

@@ -1,0 +1,1 @@
+terraform import dsm_container_project.object_storage s3-storage

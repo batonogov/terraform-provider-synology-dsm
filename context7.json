@@ -1,0 +1,22 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "Terraform Provider for Synology DSM",
+  "description": "Terraform provider for managing Synology DSM packages, Container Manager projects, users, groups, shared folders, permissions, quotas, and user home service.",
+  "branch": "main",
+  "folders": [
+    "docs",
+    "examples"
+  ],
+  "excludeFolders": [],
+  "excludeFiles": [
+    "CHANGELOG.md"
+  ],
+  "rules": [
+    "This repository is a Terraform provider for Synology DSM, not Synology DSM itself.",
+    "Install it from batonogov/synology-dsm, use dsm as the preferred local provider name, and use dsm_* resource and data source types.",
+    "The provider uses terraform-plugin-framework and Terraform protocol 6.0.",
+    "Package uninstall, Container Manager project deletion, and user home service disable are opt-in destructive operations; preserve the safe defaults unless destruction is explicitly intended.",
+    "A Container Manager project share_path is a File Station path such as /containers/s3-storage, not an absolute /volumeN path.",
+    "compose_yaml is marked sensitive but remains stored in Terraform state; use encrypted state and keep long-lived secrets out of Compose YAML."
+  ]
+}

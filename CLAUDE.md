@@ -11,6 +11,8 @@ task build       # Build binary to bin/
 task test        # Unit tests (go test -v -count=1 ./...)
 task test-acc    # Acceptance tests (TF_ACC=1, requires real DSM)
 task lint        # go vet ./...
+task docs        # Generate Terraform Registry docs from provider schemas
+task docs:check  # Validate examples and generated docs
 task install     # Build + install to ~/.terraform.d/plugins/ for local testing
 task clean       # Remove bin/ and test cache
 ```
@@ -30,7 +32,7 @@ Terraform provider for Synology DSM using Plugin Framework. Two layers:
 - `resource_*.go`: Resources — full CRUD + ImportState
 - `datasource_*.go`: Data sources — Read only
 
-Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient()` + `Login()` → resources get `*client.Client` via `ProviderData`
+Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.NewClient()` + `Login()` → resources get `*client.Client` via `ProviderData`
 
 ## Critical Synology DSM API Details
 
@@ -74,7 +76,7 @@ Every resource follows the same structure (see `resource_group.go` as the cleane
 
 ## Conventions
 
-- Provider name: `dsm` (source: `batonogov/dsm`)
+- Preferred local provider name: `dsm`; public source address: `batonogov/synology-dsm`
 - Resource naming: `dsm_user`, `dsm_group`, `dsm_shared_folder`, etc.
 - Provider env vars: `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`
 - Tests use `httptest.NewServer` — GET tests check `r.URL.Query().Get()`, POST tests read body and call `r.ParseForm()` then `r.FormValue()`
@@ -96,11 +98,12 @@ Automated via **Release Please + GoReleaser**:
 
 1. All commits to `main` must use **conventional commits** (`feat:`, `fix:`, `docs:`, `ci:`, `deps:`, `breaking:`)
 2. Release Please automatically creates/updates a release PR with changelog and version bump
-3. Merging the release PR creates a GitHub Release + git tag
-4. GoReleaser picks up the release event, builds binaries for all platforms, and uploads assets
+3. Merging the release PR creates a draft GitHub Release + git tag
+4. The same workflow imports the Registry GPG key, runs GoReleaser, and verifies the artifacts
+5. The workflow publishes the draft only after archives, manifest, checksums, and signature pass verification
 
 ```
-conventional commits → Release Please PR → merge → GitHub Release → GoReleaser → binaries
+conventional commits → Release Please PR → merge → draft release → signed artifacts → publish
 ```
 
 - **Never create tags manually** — Release Please manages versions
@@ -110,8 +113,7 @@ conventional commits → Release Please PR → merge → GitHub Release → GoRe
 ## CI/CD
 
 - `.github/workflows/test.yml` — unit tests on push/PR
-- `.github/workflows/release-please.yml` — release PR automation on push to main
-- `.github/workflows/release.yml` — GoReleaser on GitHub Release event
+- `.github/workflows/release-please.yml` — release PR automation plus signed, verified GoReleaser publication
 - `.github/dependabot.yml` — weekly dependency updates (gomod + github-actions)
 
 ## Acceptance Test Environment
