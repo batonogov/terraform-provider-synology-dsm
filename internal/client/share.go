@@ -67,6 +67,10 @@ var (
 // mutateShare runs a share mutation with the two properties DSM requires:
 // mutations do not overlap, and a busy response is waited out rather than
 // surfaced. Callers must not hold shareMu themselves.
+//
+// This retries DSM's answers; doRequestWithRetry independently retries
+// transport failures underneath, so a fully broken network can cost
+// shareBusyAttempts × maxRetries requests before the error surfaces.
 func (c *Client) mutateShare(ctx context.Context, do func() error) error {
 	c.shareMu.Lock()
 	defer c.shareMu.Unlock()

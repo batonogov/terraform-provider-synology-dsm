@@ -18,12 +18,9 @@ import (
 // in milliseconds rather than the ~15 seconds the production budget spans.
 func shrinkShareBusyBackoff(t *testing.T) {
 	t.Helper()
-	origDelay, origAttempts := shareBusyBaseDelay, shareBusyAttempts
+	origDelay := shareBusyBaseDelay
 	shareBusyBaseDelay = time.Millisecond
-	t.Cleanup(func() {
-		shareBusyBaseDelay = origDelay
-		shareBusyAttempts = origAttempts
-	})
+	t.Cleanup(func() { shareBusyBaseDelay = origDelay })
 }
 
 // busyShareServer answers the first failCount share mutations with the given
