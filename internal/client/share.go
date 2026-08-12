@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"time"
 )
 
 type Share struct {
@@ -49,12 +50,61 @@ func buildShareInfo(req CreateShareRequest) string {
 	return string(raw)
 }
 
+// shareBusyCodes are the DSM responses that mean "not now" rather than "no":
+// 3328 rejects a share mutation that overlaps another one, and 3300 comes back
+// while an earlier mutation is still settling — typically for seconds after a
+// batch of deletions. Both clear on their own, so they are retried.
+var shareBusyCodes = []int{3300, 3328}
+
+// Retry budget for busy responses. Variables so tests can shrink them; the
+// defaults span roughly 15 seconds, which covers the settling delays observed
+// on DS1525+ / DSM 7.4.
+var (
+	shareBusyAttempts  = 5
+	shareBusyBaseDelay = time.Second
+)
+
+// mutateShare runs a share mutation with the two properties DSM requires:
+// mutations do not overlap, and a busy response is waited out rather than
+// surfaced. Callers must not hold shareMu themselves.
+//
+// This retries DSM's answers; doRequestWithRetry independently retries
+// transport failures underneath, so a fully broken network can cost
+// shareBusyAttempts × maxRetries requests before the error surfaces.
+func (c *Client) mutateShare(ctx context.Context, do func() error) error {
+	c.shareMu.Lock()
+	defer c.shareMu.Unlock()
+
+	var err error
+	for attempt := range shareBusyAttempts {
+		if attempt > 0 {
+			delay := shareBusyBaseDelay * time.Duration(1<<(attempt-1))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		if err = do(); err == nil {
+			return nil
+		}
+		if !IsAPIError(err, shareBusyCodes...) {
+			return err
+		}
+	}
+	return err
+}
+
 func (c *Client) CreateShare(ctx context.Context, req CreateShareRequest) (*Share, error) {
 	params := url.Values{}
 	params.Set("name", req.Name)
 	params.Set("shareinfo", buildShareInfo(req))
 
-	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "create", params)
+	err := c.mutateShare(ctx, func() error {
+		_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "create", params)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create share %q: %w", req.Name, err)
 	}
@@ -127,7 +177,10 @@ func (c *Client) UpdateShare(ctx context.Context, name string, req CreateShareRe
 	params.Set("name", name)
 	params.Set("shareinfo", buildShareInfo(req))
 
-	_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "set", params)
+	err := c.mutateShare(ctx, func() error {
+		_, err := c.DoAPIPost(ctx, "SYNO.Core.Share", "1", "set", params)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("update share %q: %w", name, err)
 	}
@@ -141,7 +194,10 @@ func (c *Client) DeleteShare(ctx context.Context, name string) error {
 	params := url.Values{}
 	params.Set("name", string(namesJSON))
 
-	_, err := c.DoAPI(ctx, "SYNO.Core.Share", "1", "delete", params)
+	err := c.mutateShare(ctx, func() error {
+		_, err := c.DoAPI(ctx, "SYNO.Core.Share", "1", "delete", params)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("delete share %q: %w", name, err)
 	}
