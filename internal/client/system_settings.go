@@ -93,12 +93,27 @@ func (c *Client) ListTimezones(ctx context.Context) ([]Timezone, error) {
 // parallelism two concurrent callers would otherwise both read the old state
 // and the second write would silently undo the first.
 func (c *Client) SetSystemSettings(ctx context.Context, req SetSystemSettingsRequest) (*SystemSettings, error) {
+	if err := c.applySystemSettings(ctx, req); err != nil {
+		return nil, err
+	}
+
+	// Read back outside the lock: the write is what must not interleave, and
+	// holding the lock across an extra round trip only serialises refreshes.
+	return c.GetSystemSettings(ctx)
+}
+
+// applySystemSettings performs the read-modify-write that SYNO.Core.Region.NTP
+// requires, holding mu for the whole sequence so two concurrent writers cannot
+// each build a payload from the same pre-change state and lose one another's
+// field. Kept separate from SetSystemSettings purely so the lock can be
+// released by defer — an early return added later would otherwise deadlock.
+func (c *Client) applySystemSettings(ctx context.Context, req SetSystemSettingsRequest) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	current, err := c.GetSystemSettings(ctx)
 	if err != nil {
-		c.mu.Unlock()
-		return nil, err
+		return err
 	}
 
 	desired := *current
@@ -111,12 +126,9 @@ func (c *Client) SetSystemSettings(ctx context.Context, req SetSystemSettingsReq
 	desired.NTPMode = resolveNTPMode(*current, req.NTPEnabled)
 
 	if err := c.setRegionNTP(ctx, systemSettingsParams(desired)); err != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("set system settings: %w", err)
+		return fmt.Errorf("set system settings: %w", err)
 	}
-	c.mu.Unlock()
-
-	return c.GetSystemSettings(ctx)
+	return nil
 }
 
 // setRegionNTP issues the `set` call, POST first and GET as a fallback.
