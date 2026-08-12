@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -73,8 +74,10 @@ func (r *sharedFolderResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"description": schema.StringAttribute{
-				Optional:    true,
-				Description: "Description of the shared folder.",
+				Optional: true,
+				Description: "Description of the shared folder. DSM accepts at most 64 characters — the limit counts " +
+					"characters rather than bytes, so 64 Cyrillic characters (128 bytes) are fine while 65 ASCII " +
+					"ones are not. Longer values are rejected at plan time; DSM itself would answer error 3300.",
 			},
 			"hidden": schema.BoolAttribute{
 				Optional:    true,
@@ -291,14 +294,33 @@ func terraformIdentifier(name string) string {
 	return identifier
 }
 
-// ValidateConfig rejects a combination DSM itself refuses: compression on a
-// share without the copy-on-write/checksum feature. Caught here, it surfaces at
-// plan time with an explanation instead of a bare API failure during apply.
+// maxShareDescriptionRunes is the length DSM accepts for a share description.
+// Measured on DS1525+ / DSM 7.4-90075 (issue #65): the limit counts characters,
+// not bytes — 64 Cyrillic characters (128 bytes) are accepted, 65 ASCII ones are
+// not. Exceeding it fails the create with a bare 3300.
+const maxShareDescriptionRunes = 64
+
+// ValidateConfig rejects what DSM itself refuses, at plan time and with a
+// reason, rather than as an opaque API failure part-way through an apply:
+// compression without copy-on-write, and an over-long description.
 func (r *sharedFolderResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config sharedFolderResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	if !config.Description.IsNull() && !config.Description.IsUnknown() {
+		if length := utf8.RuneCountInString(config.Description.ValueString()); length > maxShareDescriptionRunes {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("description"),
+				"Description is too long",
+				fmt.Sprintf("DSM accepts at most %d characters in a shared folder description, got %d. "+
+					"The limit counts characters rather than bytes, so 64 Cyrillic characters are fine while "+
+					"65 ASCII ones are not. Left to DSM this fails during apply with a bare error 3300.",
+					maxShareDescriptionRunes, length),
+			)
+		}
 	}
 
 	// Unknown values are resolved later; an unset enable_share_cow defaults to

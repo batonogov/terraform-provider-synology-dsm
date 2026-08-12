@@ -50,11 +50,20 @@ func buildShareInfo(req CreateShareRequest) string {
 	return string(raw)
 }
 
-// shareBusyCodes are the DSM responses that mean "not now" rather than "no":
-// 3328 rejects a share mutation that overlaps another one, and 3300 comes back
-// while an earlier mutation is still settling — typically for seconds after a
-// batch of deletions. Both clear on their own, so they are retried.
-var shareBusyCodes = []int{3300, 3328}
+// shareConcurrentMutationCode is DSM's rejection of a share mutation that
+// overlaps another one. It means "not now" and nothing else, so it gets the
+// full retry budget.
+const shareConcurrentMutationCode = 3328
+
+// shareGeneralRejectionCode is DSM's catch-all refusal for share requests. It
+// comes back while an earlier mutation is still settling (issue #50) — but also
+// for a request DSM will never accept, such as a description over 64 characters
+// (issue #65). Since the two are indistinguishable on the wire, it is retried
+// briefly: enough to ride out settling, not so long that a malformed request
+// takes fifteen seconds to report what it could have reported at once.
+const shareGeneralRejectionCode = 3300
+
+var shareBusyCodes = []int{shareGeneralRejectionCode, shareConcurrentMutationCode}
 
 // Retry budget for busy responses. Variables so tests can shrink them; the
 // defaults span roughly 15 seconds, which covers the settling delays observed
@@ -62,6 +71,8 @@ var shareBusyCodes = []int{3300, 3328}
 var (
 	shareBusyAttempts  = 5
 	shareBusyBaseDelay = time.Second
+	// Attempts allowed for the ambiguous 3300 before it is taken at face value.
+	shareGeneralRejectionAttempts = 2
 )
 
 // mutateShare runs a share mutation with the two properties DSM requires:
@@ -90,6 +101,12 @@ func (c *Client) mutateShare(ctx context.Context, do func() error) error {
 			return nil
 		}
 		if !IsAPIError(err, shareBusyCodes...) {
+			return err
+		}
+		// 3300 also answers requests DSM considers malformed, which no amount of
+		// waiting fixes. Give it a couple of attempts for the settling case, then
+		// report it instead of spending the whole budget on a lost cause.
+		if IsAPIError(err, shareGeneralRejectionCode) && attempt+1 >= shareGeneralRejectionAttempts {
 			return err
 		}
 	}

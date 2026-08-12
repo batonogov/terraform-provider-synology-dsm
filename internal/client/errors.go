@@ -59,7 +59,13 @@ var commonAPIErrors = map[int]string{
 // bare number, because it sends the reader off in the wrong direction.
 var apiSpecificErrors = map[string]map[int]string{
 	"SYNO.Core.Share": {
-		3300: "DSM rejected the request while it was still settling an earlier share operation; this usually clears within seconds",
+		// 3300 is DSM's general-purpose refusal for share requests, so the
+		// description must not commit to one cause. It is returned both while an
+		// earlier mutation is still settling (issue #50) and for a request DSM
+		// considers malformed — a description over 64 characters, for one
+		// (issue #65). The first wording named only the transient case and sent
+		// readers hunting for a concurrency problem that was not there.
+		3300: "DSM rejected the share request. This can mean an earlier share operation is still settling, or that a field exceeds what DSM accepts — descriptions are capped at 64 characters",
 		3301: "a share with this name already exists",
 		3328: "DSM rejected the request because another share operation was in progress; this usually clears on retry",
 	},
