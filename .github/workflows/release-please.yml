@@ -40,19 +40,29 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.release_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      - name: Verify tag target
+      - name: Ensure release tag
         env:
           RELEASE_SHA: ${{ needs.release-please.outputs.release_sha }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+          remote_tag_sha="$(git ls-remote --refs origin "refs/tags/$TAG_NAME" | cut -f1)"
+          if [ -n "$remote_tag_sha" ]; then
+            test "$remote_tag_sha" = "$RELEASE_SHA"
+            git fetch --force origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+          else
+            git tag "$TAG_NAME" "$RELEASE_SHA"
+            git push origin "refs/tags/$TAG_NAME"
+          fi
+
           test "$(git rev-list -n 1 "$TAG_NAME")" = "$RELEASE_SHA"
 
       - name: Import GPG key
