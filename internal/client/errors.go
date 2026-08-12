@@ -1,0 +1,92 @@
+package client
+
+import (
+	"errors"
+	"fmt"
+)
+
+// APIError is a DSM API failure carrying the numeric code DSM reported.
+//
+// API records which API produced the code, because DSM reuses numbers above
+// 3000 across APIs: 3101 means "invalid home location" for SYNO.Core.User.Home
+// and nothing of the sort elsewhere. It is filled in by the request layer and
+// is deliberately not part of the wire format.
+type APIError struct {
+	Code int    `json:"code"`
+	API  string `json:"-"`
+}
+
+// Error renders the code as a sentence rather than a bare number. Unknown codes
+// still surface the number so an unrecognised failure stays diagnosable.
+func (e *APIError) Error() string {
+	if desc, ok := describeAPIError(e.API, e.Code); ok {
+		return fmt.Sprintf("%s (code %d)", desc, e.Code)
+	}
+	return fmt.Sprintf("unexpected DSM error (code %d)", e.Code)
+}
+
+// IsAPIError reports whether err, or any error it wraps, is a DSM API error
+// with one of the given codes. Prefer this over matching the rendered message:
+// the wording is presentation, the code is the contract.
+func IsAPIError(err error, codes ...int) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	for _, code := range codes {
+		if apiErr.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// commonAPIErrors are the codes DSM returns from every API.
+var commonAPIErrors = map[int]string{
+	100: "unknown DSM error",
+	101: "invalid parameter",
+	102: "the requested API does not exist",
+	103: "the requested method does not exist",
+	104: "the requested API version is not supported",
+	105: "the session does not have permission for this operation",
+	106: "the session timed out",
+	107: "the session was interrupted by a duplicate login",
+	119: "the session is invalid or has expired",
+}
+
+// apiSpecificErrors are codes whose meaning was confirmed against real DSM
+// hardware. Only verified codes belong here — a wrong sentence is worse than a
+// bare number, because it sends the reader off in the wrong direction.
+var apiSpecificErrors = map[string]map[int]string{
+	"SYNO.Core.Share": {
+		3300: "DSM rejected the request while it was still settling an earlier share operation; this usually clears within seconds",
+		3301: "a share with this name already exists",
+		3328: "DSM rejected the request because another share operation was in progress; this usually clears on retry",
+	},
+	"SYNO.API.Auth": {
+		400: "invalid account or password",
+		401: "the account is disabled",
+		402: "permission denied",
+		403: "two-factor authentication is required for this account",
+		404: "the two-factor authentication code is invalid",
+	},
+	"SYNO.Core.User": {
+		3106: "user not found",
+	},
+	"SYNO.Core.User.Home": {
+		3101: "invalid home location: it must be a volume path such as /volume1, not a bare volume name",
+		3103: "the location parameter is required whenever the home service is enabled",
+	},
+}
+
+// describeAPIError resolves a code to a sentence, preferring the API-specific
+// meaning over the shared one.
+func describeAPIError(api string, code int) (string, bool) {
+	if perAPI, ok := apiSpecificErrors[api]; ok {
+		if desc, ok := perAPI[code]; ok {
+			return desc, true
+		}
+	}
+	desc, ok := commonAPIErrors[code]
+	return desc, ok
+}

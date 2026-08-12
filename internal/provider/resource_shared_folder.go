@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -168,7 +169,7 @@ func (r *sharedFolderResource) Create(ctx context.Context, req resource.CreateRe
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to create shared folder",
-			err.Error(),
+			sharedFolderErrorDetail(err, plan.Name.ValueString()),
 		)
 		return
 	}
@@ -176,6 +177,46 @@ func (r *sharedFolderResource) Create(ctx context.Context, req resource.CreateRe
 	applyShareToPlan(&plan, share)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+// sharedFolderErrorDetail turns a share API failure into something the reader
+// can act on. The client already renders the code as a sentence; what it cannot
+// know is the Terraform-level remedy, which is what gets appended here.
+func sharedFolderErrorDetail(err error, name string) string {
+	message := err.Error()
+	switch {
+	case client.IsAPIError(err, 3301):
+		return message + fmt.Sprintf("\n\nImport it instead of creating it:\n  terraform import dsm_shared_folder.%s %s",
+			terraformIdentifier(name), name)
+	case client.IsAPIError(err, 105):
+		return message + "\n\nShared folder operations require an administrator account."
+	default:
+		return message
+	}
+}
+
+// terraformIdentifier makes a share name usable in the resource address of an
+// import hint: DSM allows characters (spaces, dots, dashes) that Terraform does
+// not accept in a resource name.
+func terraformIdentifier(name string) string {
+	if name == "" {
+		return "example"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	identifier := b.String()
+	// A Terraform identifier cannot start with a digit or a dash.
+	if first := rune(identifier[0]); first == '-' || (first >= '0' && first <= '9') {
+		identifier = "_" + identifier
+	}
+	return identifier
 }
 
 // ValidateConfig rejects a combination DSM itself refuses: compression on a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -25,14 +26,6 @@ type APIResponse struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Error   *APIError       `json:"error,omitempty"`
-}
-
-type APIError struct {
-	Code int `json:"code"`
-}
-
-func (e *APIError) Error() string {
-	return fmt.Sprintf("synology api error: code %d", e.Code)
 }
 
 type Client struct {
@@ -245,7 +238,10 @@ func (c *Client) executeRequest(ctx context.Context, params url.Values, httpMeth
 
 	if !apiResp.Success {
 		if apiResp.Error != nil {
-			return nil, fmt.Errorf("api error %d: %w", apiResp.Error.Code, apiResp.Error)
+			// The API name is not on the wire; it comes from the request we just
+			// sent and is what makes a code above 3000 interpretable.
+			apiResp.Error.API = params.Get("api")
+			return nil, apiResp.Error
 		}
 		return nil, fmt.Errorf("api returned success=false with no error details")
 	}
@@ -329,8 +325,19 @@ func (c *Client) refreshSessionParams(params url.Values) url.Values {
 	return params
 }
 
+// isTransientError detects transport-level failures worth retrying. It matches
+// on the message because net/http returns most of these as opaque errors.
+//
+// A DSM API error is never transient by this rule: those carry a code, and the
+// codes worth retrying are decided explicitly per API. Checking that first also
+// keeps the heuristic from tripping over the human-readable code descriptions —
+// "the session timed out" (106) must not be mistaken for a network timeout.
 func isTransientError(err error) bool {
 	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return false
 	}
 	msg := err.Error()
@@ -342,13 +349,8 @@ func isTransientError(err error) bool {
 
 // isSessionExpiredError detects DSM API error 119 ("SID not found or invalid"),
 // which signals that the session has expired and a re-login is required.
-// The trailing ":" avoids false-positives on unrelated codes like 1190, 1191,
-// ... which would otherwise contain the substring "api error 119".
 func isSessionExpiredError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "api error 119:")
+	return IsAPIError(err, 119)
 }
 
 func boolParam(v bool) string {

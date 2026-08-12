@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -239,13 +238,11 @@ func userHomeErrorDetail(err error) string {
 	msg := err.Error()
 
 	switch {
-	case strings.Contains(msg, "api error 3101"):
-		return msg + "\n\nDSM error 3101 usually means `location` is not a volume path. " +
-			"Use `/volume1`, not `volume1`."
-	case strings.Contains(msg, "api error 3103"):
-		return msg + "\n\nDSM error 3103 means the `location` parameter is missing. " +
-			"It is required whenever `enable` is true."
-	case strings.Contains(msg, "api error 119"):
+	case client.IsAPIError(err, 3101):
+		return msg + "\n\nUse a volume path such as `/volume1`, not a bare `volume1`."
+	case client.IsAPIError(err, 3103):
+		return msg + "\n\n`location` is required whenever `enable` is true."
+	case client.IsAPIError(err, 119):
 		return msg + "\n\nSYNO.Core.User.Home also returns error 119 when the session is valid but the account " +
 			"is not the built-in `admin`. Connect the provider with the built-in administrator account, or enable " +
 			"the service manually in DSM: Control Panel → User & Group → Advanced → User Home."

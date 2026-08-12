@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -106,8 +107,8 @@ func TestClient_DoAPI_119ReloginOnlyOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when 119 is persistent, got nil")
 	}
-	if !strings.Contains(err.Error(), "api error 119") {
-		t.Fatalf("error should carry the 119 context, got: %v", err)
+	if !IsAPIError(err, 119) {
+		t.Fatalf("error should carry the 119 code, got: %v", err)
 	}
 	if strings.Contains(err.Error(), "max retries exceeded") {
 		t.Fatalf("persistent 119 should be returned verbatim, not as retry exhaustion: %v", err)
@@ -226,7 +227,9 @@ func TestClient_DoAPI_ReloginFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "re-login") {
 		t.Fatalf("error should mention re-login failure, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "api error 119") {
+	// The re-login failure is what the caller must act on, so it is the error
+	// returned; the original 119 stays in the message as context.
+	if !strings.Contains(err.Error(), "code 119") {
 		t.Fatalf("error should preserve original 119 context, got: %v", err)
 	}
 }
@@ -484,30 +487,34 @@ func TestClient_ConcurrentRelogin(t *testing.T) {
 	}
 }
 
-// TestIsSessionExpiredError covers the string-based 119 detection.
+// TestIsSessionExpiredError covers 119 detection, which keys off the code
+// carried by *APIError rather than the rendered message.
 func TestIsSessionExpiredError(t *testing.T) {
 	cases := []struct {
-		in   string
+		name string
+		err  error
 		want bool
 	}{
-		{"api error 119: synology api error: code 119", true},
-		{"api error 102: synology api error: code 102", false},
-		// Regression: codes 1190, 1191, 11900 contain "api error 119" as a substring
-		// but must NOT be treated as session-expired (they would trigger a bogus re-login).
-		{"api error 1190: synology api error: code 1190", false},
-		{"api error 1191: synology api error: code 1191", false},
-		{"api error 11900: synology api error: code 11900", false},
-		{"http request: connection refused", false},
-		{"", false},
+		{"bare 119", &APIError{Code: 119}, true},
+		{"wrapped 119", fmt.Errorf("get user home service: %w", &APIError{Code: 119}), true},
+		{"unrelated code", &APIError{Code: 102}, false},
+		// Regression: 1190/1191/11900 render a message containing "119" and were
+		// mistaken for a session expiry back when detection was string-based; a
+		// bogus re-login burned every retry attempt.
+		{"1190 is not 119", &APIError{Code: 1190}, false},
+		{"1191 is not 119", &APIError{Code: 1191}, false},
+		{"11900 is not 119", &APIError{Code: 11900}, false},
+		// A transport failure is not an API error at all.
+		{"transport error", errors.New("http request: connection refused"), false},
+		// Text that merely looks like the old format must not match.
+		{"lookalike text", errors.New("api error 119: synology api error: code 119"), false},
+		{"nil", nil, false},
 	}
 	for _, c := range cases {
-		err := fmt.Errorf("%s", c.in)
-		if got := isSessionExpiredError(err); got != c.want {
-			t.Errorf("isSessionExpiredError(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-	// nil must not panic.
-	if isSessionExpiredError(nil) {
-		t.Error("isSessionExpiredError(nil) should be false")
+		t.Run(c.name, func(t *testing.T) {
+			if got := isSessionExpiredError(c.err); got != c.want {
+				t.Errorf("isSessionExpiredError(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
 	}
 }

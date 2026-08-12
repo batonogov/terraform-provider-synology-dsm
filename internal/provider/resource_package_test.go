@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -94,8 +95,8 @@ func TestPackageErrorDetail(t *testing.T) {
 		contains []string
 	}{
 		{fmtPackageNotFound(), []string{"ContainerManager", "Package Center identifier", "NAS model"}},
-		{errors.New("install: api error 103: synology api error: code 103"), []string{"103", "Virtual DSM"}},
-		{errors.New("control: api error 105: synology api error: code 105"), []string{"105", "administrator"}},
+		{fmt.Errorf("install: %w", &client.APIError{Code: 103, API: "SYNO.Core.Package.Installation"}), []string{"103", "Virtual DSM"}},
+		{fmt.Errorf("control: %w", &client.APIError{Code: 105, API: "SYNO.Core.Package.Control"}), []string{"105", "administrator"}},
 		{errors.New("connection refused"), []string{"connection refused"}},
 	}
 	for _, tt := range tests {

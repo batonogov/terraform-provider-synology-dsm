@@ -301,7 +301,7 @@ func (c *Client) runContainerProjectAction(ctx context.Context, id, action strin
 		// newline-delimited streaming methods. Current builds support the direct
 		// POST methods, so use those first and fall back only when DSM says the
 		// method does not exist.
-		if strings.Contains(err.Error(), "api error 103:") {
+		if IsAPIError(err, 103) {
 			if streamErr := c.streamContainerProjectAction(ctx, id, action+"_stream"); streamErr == nil {
 				return nil
 			} else {
@@ -363,7 +363,8 @@ func readContainerProjectActionStream(response *http.Response) error {
 			continue
 		}
 		if envelope.Error != nil {
-			return fmt.Errorf("api error %d: %w", envelope.Error.Code, envelope.Error)
+			envelope.Error.API = "SYNO.Docker.Project"
+			return envelope.Error
 		}
 		return errors.New("streaming API returned success=false with no error details")
 	}
@@ -542,11 +543,7 @@ func jsonString(value string) string {
 }
 
 func isContainerProjectMissingError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := err.Error()
-	return strings.Contains(message, "api error 2104:") || strings.Contains(message, "api error 408:")
+	return IsAPIError(err, 2104, 408)
 }
 
 func isTransientContainerProjectStatus(status string) bool {

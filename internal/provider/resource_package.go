@@ -272,11 +272,11 @@ func packageErrorDetail(err error) string {
 	switch {
 	case errors.Is(err, client.ErrPackageNotFound):
 		return message + "\n\nVerify the exact Package Center identifier and that the package supports this NAS model and DSM version."
-	case strings.Contains(message, "api error 103"):
-		return message + "\n\nDSM error 103 means the Package Center method is unavailable. Virtual DSM blocks package installation; " +
+	case client.IsAPIError(err, 103):
+		return message + "\n\nThe Package Center method is unavailable. Virtual DSM blocks package installation; " +
 			"on physical hardware, also verify that the package is compatible with the NAS model."
-	case strings.Contains(message, "api error 105"):
-		return message + "\n\nDSM error 105 means the provider account is not allowed to control packages. Use an administrator account."
+	case client.IsAPIError(err, 105):
+		return message + "\n\nThe provider account is not allowed to control packages. Use an administrator account."
 	default:
 		return message
 	}

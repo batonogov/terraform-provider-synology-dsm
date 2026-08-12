@@ -273,9 +273,9 @@ func containerProjectErrorDetail(err error) string {
 		return message + "\n\nVerify the project name or UUID in Container Manager. Existing projects must be imported before Terraform can manage them."
 	case strings.Contains(message, "already exists"):
 		return message + "\n\nImport the existing project by name or UUID instead of creating a second project with the same name."
-	case strings.Contains(message, "api error 102"), strings.Contains(message, "api error 103"):
+	case client.IsAPIError(err, 102, 103):
 		return message + "\n\nThe Container Manager project API is unavailable. Install and start the `ContainerManager` package on compatible physical Synology hardware; Virtual DSM does not provide this package."
-	case strings.Contains(message, "api error 105"):
+	case client.IsAPIError(err, 105):
 		return message + "\n\nDSM denied the Container Manager operation. Use an administrator account and verify access to the project shared folder."
 	default:
 		return message

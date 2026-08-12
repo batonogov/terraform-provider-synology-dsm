@@ -54,6 +54,8 @@ Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.Ne
 
 ## Client patterns
 
+- **Error codes are the contract, messages are presentation** — `internal/client/errors.go` renders a DSM code as a sentence (`a share with this name already exists (code 3301)`) using a common table plus per-API overrides, because codes above 3000 mean different things in different APIs. `executeRequest` tags each `*APIError` with the API it came from. Never match on the rendered text: use `client.IsAPIError(err, codes...)`. Only add a description for a code whose meaning was verified against real DSM.
+
 - **User fields DSM will not round-trip** — `cannot_chg_passwd` and `allow_ip` are accepted by `set` but never returned by `list`; `passwd_never_expire` is ignored outright. All three are left out of the schema. Per-user IP restrictions on DSM 7 live in the firewall (`SYNO.Core.Security.Firewall.*`), not the account.
 - **User `get` returns minimal data without `additional`** — only `name` and `uid`. To get `description`, `email`, `disabled`, `groups` use `list` method with `additional=["description","email","disabled","groups"]` and filter by name.
 - **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
