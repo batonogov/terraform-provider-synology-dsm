@@ -587,11 +587,6 @@ func int64Value(object map[string]interface{}, key string) int64 {
 	}
 }
 
-func boolValue(object map[string]interface{}, key string) bool {
-	value, _ := object[key].(bool)
-	return value
-}
-
 // boolPointerValue distinguishes "DSM reported false" from "DSM did not report
 // this field at all".
 func boolPointerValue(object map[string]interface{}, key string) *bool {

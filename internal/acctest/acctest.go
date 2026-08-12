@@ -69,6 +69,9 @@ func TestAccPreCheckSystemSettings(t *testing.T) {
 	TestAccPreCheck(t)
 	if os.Getenv("DSM_ACC_SYSTEM_SETTINGS") != "1" {
 		t.Skip("skipping system settings write test: it changes the NAS clock configuration and the SYNO.Core.Region.NTP set contract is unverified; set DSM_ACC_SYSTEM_SETTINGS=1 to opt in")
+	}
+}
+
 // TestAccPreCheckReverseProxy gates the reverse proxy acceptance tests.
 //
 // SYNO.Core.AppPortal.ReverseProxy is undocumented and this provider's contract

@@ -18,11 +18,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_container_project`](#dsm_container_project) | Manage Docker Compose projects in Container Manager |
 | [`dsm_file`](#dsm_file) | Upload configuration files into a shared folder |
 | [`dsm_system_settings`](#dsm_system_settings) | Manage the NAS time zone and NTP synchronisation |
-
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`) for reading existing objects.
 | [`dsm_reverse_proxy`](#dsm_reverse_proxy) | Publish a service through the DSM Login Portal reverse proxy |
 
-Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_reverse_proxy`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
