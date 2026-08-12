@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.1.1...v0.2.0) (2026-08-12)
+
+
+### Features
+
+* add dsm_file resource for uploading files into shared folders ([#66](https://github.com/batonogov/terraform-provider-synology-dsm/issues/66)) ([e6b467b](https://github.com/batonogov/terraform-provider-synology-dsm/commit/e6b467b481df0b0048581f6f31c040ba25d2856e))
+* allow adopting an existing shared folder ([#60](https://github.com/batonogov/terraform-provider-synology-dsm/issues/60)) ([1a2a2c5](https://github.com/batonogov/terraform-provider-synology-dsm/commit/1a2a2c5764a9b23064db0fa1f5f42d258e70497a))
+* manage DSM firewall rules ([#76](https://github.com/batonogov/terraform-provider-synology-dsm/issues/76)) ([2fdf5a0](https://github.com/batonogov/terraform-provider-synology-dsm/commit/2fdf5a0e5b8ea9120d0d29feba3ef907f05f1d0c)), closes [#61](https://github.com/batonogov/terraform-provider-synology-dsm/issues/61)
+* manage DSM reverse proxy entries ([#74](https://github.com/batonogov/terraform-provider-synology-dsm/issues/74)) ([7dff3d0](https://github.com/batonogov/terraform-provider-synology-dsm/commit/7dff3d09fad682ab1febd05a33c399f24e8d83cb))
+* manage DSM Task Scheduler and event tasks ([#77](https://github.com/batonogov/terraform-provider-synology-dsm/issues/77)) ([0694b3a](https://github.com/batonogov/terraform-provider-synology-dsm/commit/0694b3ac1dac2ff37ea32e673f39a09edf847766))
+* manage DSM time zone and NTP settings ([#68](https://github.com/batonogov/terraform-provider-synology-dsm/issues/68)) ([1405e85](https://github.com/batonogov/terraform-provider-synology-dsm/commit/1405e857a32144399645083f23abb10b9f4013c1))
+* manage TLS certificates (import and Let's Encrypt) ([#78](https://github.com/batonogov/terraform-provider-synology-dsm/issues/78)) ([766ce84](https://github.com/batonogov/terraform-provider-synology-dsm/commit/766ce84562d06e77094925ea0cd9c944861321ff))
+
+
+### Bug Fixes
+
+* catch over-long share descriptions and stop overselling 3300 ([#71](https://github.com/batonogov/terraform-provider-synology-dsm/issues/71)) ([dd73747](https://github.com/batonogov/terraform-provider-synology-dsm/commit/dd73747e8d02a99fc3c3c891c8042a5d5f0f996f)), closes [#65](https://github.com/batonogov/terraform-provider-synology-dsm/issues/65)
+* do not lose a project to a late DSM response ([#75](https://github.com/batonogov/terraform-provider-synology-dsm/issues/75)) ([12270a6](https://github.com/batonogov/terraform-provider-synology-dsm/commit/12270a65fb54166151c7d51c8e4ff38032378bec)), closes [#70](https://github.com/batonogov/terraform-provider-synology-dsm/issues/70)
+* surface Container Manager's own reason for a failed build ([#72](https://github.com/batonogov/terraform-provider-synology-dsm/issues/72)) ([09b7ee8](https://github.com/batonogov/terraform-provider-synology-dsm/commit/09b7ee8d35a058ed4c45773f78e138b0f115cc60)), closes [#67](https://github.com/batonogov/terraform-provider-synology-dsm/issues/67)
+* treat a partially running project as running ([#73](https://github.com/batonogov/terraform-provider-synology-dsm/issues/73)) ([72eb856](https://github.com/batonogov/terraform-provider-synology-dsm/commit/72eb85615e739d474d660145c2676ff586c4437d)), closes [#69](https://github.com/batonogov/terraform-provider-synology-dsm/issues/69)
+
 ## [0.1.1](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.1.0...v0.1.1) (2026-08-12)
 
 
