@@ -1,6 +1,6 @@
 module github.com/batonogov/terraform-provider-synology-dsm
 
-go 1.26.3
+go 1.26.5
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
