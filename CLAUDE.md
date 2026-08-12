@@ -54,6 +54,7 @@ Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.Ne
 
 ## Client patterns
 
+- **Share mutations are serialised and retried** — DSM processes `SYNO.Core.Share` create/update/delete one at a time: overlapping calls answer 3328, and a call issued while an earlier mutation is still settling answers 3300. `shareMu` queues mutations client-side and `mutateShare` retries those two codes with exponential backoff (~15s budget); reads stay outside the lock. Permanent answers such as 3301 are never retried.
 - **Error codes are the contract, messages are presentation** — `internal/client/errors.go` renders a DSM code as a sentence (`a share with this name already exists (code 3301)`) using a common table plus per-API overrides, because codes above 3000 mean different things in different APIs. `executeRequest` tags each `*APIError` with the API it came from. Never match on the rendered text: use `client.IsAPIError(err, codes...)`. Only add a description for a code whose meaning was verified against real DSM.
 
 - **User fields DSM will not round-trip** — `cannot_chg_passwd` and `allow_ip` are accepted by `set` but never returned by `list`; `passwd_never_expire` is ignored outright. All three are left out of the schema. Per-user IP restrictions on DSM 7 live in the firewall (`SYNO.Core.Security.Firewall.*`), not the account.

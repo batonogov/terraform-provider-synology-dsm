@@ -63,6 +63,14 @@ type Client struct {
 	// project update is a multi-step stop/update/build/start sequence, and DSM's
 	// compose engine cannot safely run overlapping lifecycle operations.
 	containerProjectMu sync.Mutex
+	// shareMu serializes shared folder create/update/delete. DSM handles share
+	// mutations one at a time no matter what the caller asks for: overlapping
+	// SYNO.Core.Share calls are rejected with 3328, and a call issued while an
+	// earlier mutation is still settling gets 3300. Terraform's default
+	// parallelism makes both routine, so the client queues them itself.
+	// Reads (get/list) stay outside this lock — they are safe concurrently, and
+	// CreateShare reads back through GetShare while holding it.
+	shareMu sync.Mutex
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {
