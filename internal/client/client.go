@@ -510,3 +510,10 @@ func isSessionExpiredError(err error) bool {
 func boolParam(v bool) string {
 	return strconv.FormatBool(v)
 }
+
+// UsesTLS reports whether DSM is reached over HTTPS. Callers use it to warn
+// about operations that put credentials on the wire, such as the password
+// confirmation required for root-owned scheduled tasks.
+func (c *Client) UsesTLS() bool {
+	return strings.HasPrefix(strings.ToLower(c.baseURL), "https://")
+}

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -65,12 +64,8 @@ func (d *sharePermissionDataSource) Configure(_ context.Context, req datasource.
 		return
 	}
 
-	dsmClient, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Provider Data",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
-		)
+	dsmClient := clientFromProviderData(req.ProviderData, &resp.Diagnostics)
+	if dsmClient == nil {
 		return
 	}
 

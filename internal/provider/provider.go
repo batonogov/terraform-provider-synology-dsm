@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
@@ -27,11 +28,12 @@ type synologyProvider struct {
 }
 
 type synologyProviderModel struct {
-	Host     types.String `tfsdk:"host"`
-	Username types.String `tfsdk:"username"`
-	Password types.String `tfsdk:"password"`
-	Insecure types.Bool   `tfsdk:"insecure"`
-	Timeout  types.String `tfsdk:"timeout"`
+	Host               types.String `tfsdk:"host"`
+	Username           types.String `tfsdk:"username"`
+	Password           types.String `tfsdk:"password"`
+	Insecure           types.Bool   `tfsdk:"insecure"`
+	Timeout            types.String `tfsdk:"timeout"`
+	AllowTaskExecution types.Bool   `tfsdk:"allow_task_execution"`
 }
 
 func (p *synologyProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -41,7 +43,7 @@ func (p *synologyProvider) Metadata(_ context.Context, _ provider.MetadataReques
 
 func (p *synologyProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provider for managing Synology DSM packages, Container Manager projects, files in shared folders, reverse proxy entries, firewall rules, system settings, users, groups, shared folders, permissions, quotas, and user home service.",
+		Description: "Provider for managing Synology DSM packages, Container Manager projects, files in shared folders, reverse proxy entries, firewall rules, Task Scheduler tasks, system settings, users, groups, shared folders, permissions, quotas, and user home service.",
 		Attributes: map[string]schema.Attribute{
 			"host": schema.StringAttribute{
 				Required:    true,
@@ -66,6 +68,14 @@ func (p *synologyProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 					"Raise it for slower hardware or a NAS under load. Lifecycle operations that block while DSM works — " +
 					"creating a Container Manager project, writing a compose file — always get at least five minutes " +
 					"regardless of this value, because their duration is bounded by the NAS rather than by the network.",
+			},
+			"allow_task_execution": schema.BoolAttribute{
+				Optional: true,
+				Description: "Allow the `dsm_scheduled_task` and `dsm_event_task` resources. **These resources run arbitrary commands on the NAS, " +
+					"normally as `root`. Anyone who can change this Terraform configuration — or open a pull request against it — can execute code " +
+					"as `root` on the NAS.** Defaults to `false`, which makes both resource types fail at plan time so a team can keep them disabled " +
+					"outright. May also be set with `SYNOLOGY_DSM_ALLOW_TASK_EXECUTION=true`. Data sources are never gated: reading existing tasks " +
+					"executes nothing.",
 			},
 		},
 	}
@@ -110,6 +120,14 @@ func (p *synologyProvider) Configure(ctx context.Context, req provider.Configure
 
 	insecure := config.Insecure.ValueBool()
 
+	// The env var only grants the opt-in when the config stays silent, so an
+	// explicit allow_task_execution = false in HCL cannot be overridden by the
+	// environment of whoever runs Terraform.
+	allowTaskExecution := config.AllowTaskExecution.ValueBool()
+	if config.AllowTaskExecution.IsNull() {
+		allowTaskExecution = envBool("SYNOLOGY_DSM_ALLOW_TASK_EXECUTION")
+	}
+
 	tflog.Info(ctx, "Connecting to Synology DSM", map[string]interface{}{
 		"host": host,
 	})
@@ -140,8 +158,25 @@ func (p *synologyProvider) Configure(ctx context.Context, req provider.Configure
 
 	tflog.Info(ctx, "Successfully connected to Synology DSM")
 
-	resp.ResourceData = dsmClient
-	resp.DataSourceData = dsmClient
+	providerData := &dsmProviderData{
+		client:             dsmClient,
+		allowTaskExecution: allowTaskExecution,
+	}
+	resp.ResourceData = providerData
+	resp.DataSourceData = providerData
+}
+
+// envBool reads a boolean opt-in from the environment. Only the spellings
+// Terraform users expect for a bool are honoured; anything else counts as
+// "not enabled", because a typo must never silently grant permission to run
+// commands on the NAS.
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resource {
@@ -158,6 +193,8 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 		NewSystemSettingsResource,
 		NewReverseProxyResource,
 		NewFirewallRuleResource,
+		NewScheduledTaskResource,
+		NewEventTaskResource,
 	}
 }
 
@@ -174,5 +211,7 @@ func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.Da
 		NewSystemSettingsDataSource,
 		NewReverseProxyDataSource,
 		NewFirewallRuleDataSource,
+		NewScheduledTaskDataSource,
+		NewEventTaskDataSource,
 	}
 }
