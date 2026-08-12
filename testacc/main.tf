@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     dsm = {
-      source  = "registry.terraform.io/batonogov/dsm"
+      source  = "registry.terraform.io/batonogov/synology-dsm"
       version = "0.1.0"
     }
   }

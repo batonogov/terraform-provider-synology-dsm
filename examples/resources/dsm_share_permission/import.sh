@@ -1,0 +1,1 @@
+terraform import dsm_share_permission.developers team-data:local_group:developers

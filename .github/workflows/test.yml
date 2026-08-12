@@ -8,16 +8,61 @@ on:
 
 jobs:
   test:
+    name: Go Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
         run: go test -v -count=1 ./...
+
+  docs:
+    name: Registry Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.0
+        with:
+          terraform_wrapper: false
+
+      - name: Check examples and generated documentation
+        run: |
+          terraform fmt -check -recursive examples
+          go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.24.0 generate --provider-dir . --provider-name dsm --rendered-provider-name terraform-provider-synology-dsm
+          go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.24.0 validate --provider-dir . --provider-name dsm
+          git diff --exit-code -- docs
+
+  release-config:
+    name: Release Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Validate GoReleaser configuration
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: v2.16.0
+          args: check
+
+      - name: Validate Registry, Context7, and release metadata
+        run: |
+          jq -e '.version == 1 and .metadata.protocol_versions == ["6.0"]' terraform-registry-manifest.json
+          jq -e '.branch == "main" and (.folders | index("docs")) and (.folders | index("examples"))' context7.json
+          jq -e '.packages["."]."package-name" == "terraform-provider-synology-dsm"' release-please-config.json
+          bash -n scripts/verify-release-artifacts.sh

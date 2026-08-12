@@ -1,0 +1,1 @@
+terraform import dsm_user_home_service.homes user_home_service

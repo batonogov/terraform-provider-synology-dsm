@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-  BINARY: terraform-provider-dsm
+  BINARY: terraform-provider-synology-dsm
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo "0.1.0"
   OS:
@@ -13,7 +13,7 @@ tasks:
   build:
     desc: Build provider binary
     cmds:
-      - go build -ldflags="-s -w" -o bin/{{ .BINARY }} .
+      - go build -trimpath -ldflags="-s -w -X main.version={{ .VERSION }}" -o bin/{{ .BINARY }} .
 
   test:
     desc: Run unit tests
@@ -37,12 +37,26 @@ tasks:
     cmds:
       - go vet ./...
 
+  docs:
+    desc: Format examples and generate Terraform Registry documentation
+    cmds:
+      - terraform fmt -recursive examples
+      - go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.24.0 generate --provider-dir . --provider-name dsm --rendered-provider-name terraform-provider-synology-dsm
+
+  docs:check:
+    desc: Validate generated documentation and examples
+    cmds:
+      - terraform fmt -check -recursive examples
+      - go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.24.0 generate --provider-dir . --provider-name dsm --rendered-provider-name terraform-provider-synology-dsm
+      - go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.24.0 validate --provider-dir . --provider-name dsm
+      - git diff --exit-code -- docs
+
   install:
     desc: Install provider to local Terraform plugin directory
     deps: [build]
     cmds:
-      - mkdir -p ~/.terraform.d/plugins/registry.terraform.io/batonogov/dsm/{{ .VERSION }}/{{ .OS }}_{{ .ARCH }}
-      - cp bin/{{ .BINARY }} ~/.terraform.d/plugins/registry.terraform.io/batonogov/dsm/{{ .VERSION }}/{{ .OS }}_{{ .ARCH }}/{{ .BINARY }}
+      - mkdir -p ~/.terraform.d/plugins/registry.terraform.io/batonogov/synology-dsm/{{ .VERSION }}/{{ .OS }}_{{ .ARCH }}
+      - cp bin/{{ .BINARY }} ~/.terraform.d/plugins/registry.terraform.io/batonogov/synology-dsm/{{ .VERSION }}/{{ .OS }}_{{ .ARCH }}/{{ .BINARY }}
 
   clean:
     desc: Remove build artifacts

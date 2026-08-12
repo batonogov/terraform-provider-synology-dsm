@@ -1,29 +1,65 @@
 version: 2
 
 builds:
-  - env:
+  - id: provider
+    env:
       - CGO_ENABLED=0
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
     goos:
       - darwin
       - linux
       - windows
+      - freebsd
     goarch:
       - amd64
       - arm64
     binary: "{{ .ProjectName }}_v{{ .Version }}"
 
 archives:
-  - format: zip
+  - id: provider-archives
+    formats:
+      - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
+  ids:
+    - provider-archives
+  extra_files:
+    - glob: terraform-registry-manifest.json
+      name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
+  algorithm: sha256
 
-snapshot:
-  name_template: "{{ .Version }}-next"
+signs:
+  - artifacts: checksum
+    args:
+      - --batch
+      - --local-user
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - --output
+      - ${signature}
+      - --detach-sign
+      - ${artifact}
 
 release:
   github:
     owner: batonogov
     name: terraform-provider-synology-dsm
-  mode: keep-existing
+  draft: true
+  use_existing_draft: true
+  extra_files:
+    - glob: terraform-registry-manifest.json
+      name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
