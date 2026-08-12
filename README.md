@@ -21,12 +21,10 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_system_settings`](#dsm_system_settings) | Manage the NAS time zone and NTP synchronisation |
 | [`dsm_reverse_proxy`](#dsm_reverse_proxy) | Publish a service through the DSM Login Portal reverse proxy |
 | [`dsm_firewall_rule`](#dsm_firewall_rule) | Manage rules in a DSM firewall profile |
-
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`) for reading existing objects.
 | [`dsm_scheduled_task`](#dsm_scheduled_task) | Manage Task Scheduler script tasks (daily, weekly, monthly) |
 | [`dsm_event_task`](#dsm_event_task) | Manage tasks that run on boot or shutdown |
 
-Each resource has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`, `dsm_scheduled_task`, `dsm_event_task`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
