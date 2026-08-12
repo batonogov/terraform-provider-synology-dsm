@@ -19,8 +19,9 @@ Built with the Terraform Plugin Framework and the Synology DSM web API (`SYNO.AP
 | [`dsm_file`](#dsm_file) | Upload configuration files into a shared folder |
 | [`dsm_system_settings`](#dsm_system_settings) | Manage the NAS time zone and NTP synchronisation |
 | [`dsm_reverse_proxy`](#dsm_reverse_proxy) | Publish a service through the DSM Login Portal reverse proxy |
+| [`dsm_firewall_rule`](#dsm_firewall_rule) | Manage rules in a DSM firewall profile |
 
-Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`) for reading existing objects.
+Every resource except `dsm_file` has a matching data source (`dsm_user`, `dsm_group`, `dsm_shared_folder`, `dsm_share_permission`, `dsm_user_quota`, `dsm_user_home_service`, `dsm_package`, `dsm_container_project`, `dsm_system_settings`, `dsm_reverse_proxy`, `dsm_firewall_rule`) for reading existing objects.
 
 Full generated reference documentation is available in [`docs/`](docs/index.md).
 
@@ -660,6 +661,78 @@ terraform import dsm_reverse_proxy.nextcloud 1b0d0c30-9e1f-4a2b-8f7e-2c9d1a5b7e4
 > a DSM build that does not report it back keeps the configured value instead of
 > producing a permanent diff. Acceptance tests for this resource are opt-in
 > behind `DSM_ACC_REVERSE_PROXY=1`.
+### `dsm_firewall_rule`
+
+Manages one rule inside a DSM firewall profile.
+
+DSM has no per-rule API. A profile is read whole, one rule is inserted or
+replaced, and the whole profile is written back and applied — so the provider
+serializes these writes internally, exactly as it does for share permissions.
+
+| Attribute              | Type         | Required | Computed | Description                                                        |
+|------------------------|--------------|----------|----------|--------------------------------------------------------------------|
+| `id`                   | string       | -        | yes      | `profile:adapter:name`                                             |
+| `profile`              | string       | -        | default `default` | Firewall profile. Forces replacement if changed.          |
+| `adapter`              | string       | -        | default `global`  | Interface (`eth0`, `vpn`, …) or `global` for all. Forces replacement if changed. |
+| `name`                 | string       | yes      | -        | Rule name — DSM's Description column, and the rule's identity. Forces replacement if changed. |
+| `priority`             | int          | yes      | -        | Zero-based position in the adapter's rule list. Lower is evaluated first. |
+| `action`               | string       | yes      | -        | `allow` or `deny`                                                  |
+| `protocol`             | string       | -        | default `all` | `tcp`, `udp`, `icmp`, or `all` (DSM's `all` is TCP+UDP only)  |
+| `ports`                | list(string) | -        | -        | Destination ports/ranges (`"5001"`, `"8000-8100"`). Omit for all ports. |
+| `source`               | list(string) | -        | -        | Source addresses. Omit for any source.                             |
+| `enabled`              | bool         | -        | default `true` | Whether the rule is in force                                 |
+| `allow_lockout`        | bool         | -        | default `false` | Apply even if the change would deny the provider's own session |
+| `allow_empty_rule_set` | bool         | -        | default `false` | Allow destroying the last rule of an active profile          |
+
+```bash
+terraform import dsm_firewall_rule.s3_from_vpn "default:eth0:S3 and HTTPS from the VPN only"
+```
+
+> **Order is the policy.** DSM matches rules top to bottom and stops at the first
+> match, and the array position is the only thing that expresses priority — there
+> is no ordering field on the wire. `priority` is therefore required, and a Read
+> reports the rule's *actual* position, so a reordering made in the DSM UI turns
+> into an ordinary diff instead of a silent policy change.
+>
+> If several rules are created in one apply and Terraform happens to write a
+> high-priority rule into a list that is still short, the rule is appended and the
+> provider emits a warning naming the position it actually landed at. A second
+> `terraform apply` settles the order; `depends_on` between rules avoids the
+> warning entirely.
+
+> **Lockout protection.** Before every write the provider replays the resulting
+> profile against its own DSM session — source address of the connection it is
+> talking over, the DSM port from the provider `host`, TCP — and compares the
+> verdict with the one before the change. A change that turns a reachable session
+> into an unreachable one is refused and nothing is written. Set
+> `allow_lockout = true` to override, and only when you have another way in.
+>
+> The replay covers rules that select on addresses and ports. A rule that selects
+> by GeoIP country or by a DSM service preset cannot be replayed; when one sits in
+> the chain the write proceeds and a warning says the check was inconclusive.
+> Rules in a profile that is not the active one, and any rule at all while the
+> firewall is switched off, are not checked — nothing is enforced there.
+>
+> The source address is the one seen from the machine running Terraform. If
+> anything NATs the traffic on the way to the NAS, DSM sees a different address
+> and the check can be wrong in either direction.
+
+> **Destroy will not empty an active profile.** Removing the last rule of the
+> profile in force while the firewall is on is refused: DSM's fall-through policy
+> on a real interface is drop, so an empty profile denies everyone including
+> Terraform. Override with `allow_empty_rule_set = true`.
+
+> **What a single rule can express.** DSM stores one kind of source selector per
+> rule. One entry may be an address, a CIDR, or a dashed range; several entries
+> must all be plain addresses. A configuration DSM cannot store is rejected before
+> anything is written rather than silently reinterpreted.
+
+> **Unverified against hardware.** The firewall APIs are undocumented. The wire
+> format used here comes from Synology's own `synofirewall/fwDB.hpp` header and
+> from captures of the DSM control panel, and it is covered by stateful HTTP
+> tests — but it has not been exercised against a physical NAS, and Container
+> Manager-style surprises are possible. Try it on a NAS you can reach physically
+> before trusting it with remote access.
 
 ## Data sources
 
@@ -678,6 +751,7 @@ attributes as input and returns the remaining computed attributes:
 | `dsm_container_project`  | `name`                                             | `id`, `share_path`, `compose_yaml`, `running`, `path`, `status`, `container_ids` |
 | `dsm_system_settings`    | — (singleton)                                      | `id`, `timezone`, `ntp_enabled`, `ntp_server`, `current_date`, `current_time`, `timestamp` |
 | `dsm_reverse_proxy`      | `description`                                      | `id`, `source_protocol`, `source_hostname`, `source_port`, `destination_protocol`, `destination_hostname`, `destination_port`, `websocket`, `http2`, `hsts`, `custom_headers`, `access_control_profile`, `access_control_profile_id`, `proxy_connect_timeout`, `proxy_read_timeout`, `proxy_send_timeout`, `proxy_intercept_errors` |
+| `dsm_firewall_rule`      | `profile`, `adapter`, `name`                       | `id`, `priority`, `action`, `protocol`, `ports`, `source`, `enabled`, `firewall_enabled`, `profile_active` |
 
 ## Development
 

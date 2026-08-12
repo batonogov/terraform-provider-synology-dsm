@@ -100,6 +100,12 @@ type Client struct {
 	// critical section (getReverseProxy, findReverseProxyByDescription) must
 	// never take it, or every mutation would deadlock on its own read-back.
 	reverseProxyMu sync.Mutex
+	// localIP is the source address of the TCP connection this client uses to
+	// reach DSM, captured by the transport's dialer. The firewall resource needs
+	// it to answer "would this rule set cut off the session I am talking over?".
+	// Guarded by localMu because dials happen on arbitrary goroutines.
+	localIP net.IP
+	localMu sync.RWMutex
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {
@@ -113,34 +119,86 @@ func NewClient(host, username, password string, insecureTLS bool) *Client {
 // a compose file blocks while DSM settles, which on a busy NAS routinely outlasts
 // any timeout appropriate for a read. Those go through slowClient instead.
 func NewClientWithTimeout(host, username, password string, insecureTLS bool, timeout time.Duration) *Client {
+	c := &Client{
+		baseURL:  strings.TrimRight(host, "/"),
+		username: username,
+		password: password,
+	}
+
 	transport := &http.Transport{}
 	if insecureTLS {
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
 		}
 	}
+
+	// Record the local address of every connection to DSM. This is the only
+	// reliable way to learn which source IP our own management session uses, and
+	// the firewall lockout guard is built on it. It costs one type assertion per
+	// dial, and dials are rare because the transport pools connections.
+	dialer := &net.Dialer{Timeout: defaultHTTPTimeout, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+			c.setLocalIP(tcpAddr.IP)
+		}
+		return conn, nil
+	}
+
 	if timeout <= 0 {
 		timeout = defaultHTTPTimeout
 	}
-
 	slowTimeout := timeout
 	if slowTimeout < defaultSlowTimeout {
 		slowTimeout = defaultSlowTimeout
 	}
 
-	return &Client{
-		httpClient: &http.Client{
-			Timeout:   timeout,
-			Transport: transport,
-		},
-		slowClient: &http.Client{
-			Timeout:   slowTimeout,
-			Transport: transport,
-		},
-		baseURL:  strings.TrimRight(host, "/"),
-		username: username,
-		password: password,
+	c.httpClient = &http.Client{Timeout: timeout, Transport: transport}
+	c.slowClient = &http.Client{Timeout: slowTimeout, Transport: transport}
+	return c
+}
+
+func (c *Client) setLocalIP(ip net.IP) {
+	c.localMu.Lock()
+	defer c.localMu.Unlock()
+	c.localIP = ip
+}
+
+// LocalIP returns the source address this client's connections to DSM originate
+// from, or nil if no connection has been established yet.
+//
+// Caveat worth stating at the call site: this is the address as seen from *this*
+// host. If anything NATs the traffic between here and the NAS, DSM sees a
+// different source and a lockout check based on this value can be wrong in both
+// directions.
+func (c *Client) LocalIP() net.IP {
+	c.localMu.RLock()
+	defer c.localMu.RUnlock()
+	return c.localIP
+}
+
+// ManagementPort returns the TCP port this client reaches DSM on, deriving the
+// scheme default when the URL carries no explicit port (5001 for https, 5000 for
+// http — DSM's defaults, not the web defaults of 443/80).
+func (c *Client) ManagementPort() int {
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return 0
 	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	if u.Scheme == "https" {
+		return 5001
+	}
+	return 5000
 }
 
 func (c *Client) Login(ctx context.Context) error {
