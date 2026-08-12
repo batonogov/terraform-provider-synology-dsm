@@ -123,3 +123,17 @@ jobs:
           gh pr edit "$pr_number" \
             --add-label "autorelease: published" \
             --remove-label "autorelease: tagged"
+
+      # The release-please job at the top of this workflow runs ~30s after
+      # the merge, before the release is published and labelled. The next
+      # release PR is therefore computed against stale state and restates
+      # history that already shipped (#85).
+      #
+      # Now that the previous release is published and labelled, re-running
+      # release-please recomputes the open PR with the correct changelog.
+      - name: Recompute release PR
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          command: github-release
