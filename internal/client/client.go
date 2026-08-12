@@ -66,6 +66,10 @@ type Client struct {
 	// as "Package Center is busy". Keep this separate from mu because package
 	// operations may take minutes while share permission updates are unrelated.
 	packageMu sync.Mutex
+	// containerProjectMu serializes Container Manager project mutations. A
+	// project update is a multi-step stop/update/build/start sequence, and DSM's
+	// compose engine cannot safely run overlapping lifecycle operations.
+	containerProjectMu sync.Mutex
 }
 
 func NewClient(host, username, password string, insecureTLS bool) *Client {

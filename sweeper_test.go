@@ -30,8 +30,9 @@ func TestMain(m *testing.M) {
 
 func init() {
 	resource.AddTestSweepers("dsm_shared_folder", &resource.Sweeper{
-		Name: "dsm_shared_folder",
-		F:    sweepSharedFolders,
+		Name:         "dsm_shared_folder",
+		Dependencies: []string{"dsm_container_project"},
+		F:            sweepSharedFolders,
 	})
 	resource.AddTestSweepers("dsm_user", &resource.Sweeper{
 		Name: "dsm_user",
@@ -40,6 +41,10 @@ func init() {
 	resource.AddTestSweepers("dsm_group", &resource.Sweeper{
 		Name: "dsm_group",
 		F:    sweepGroups,
+	})
+	resource.AddTestSweepers("dsm_container_project", &resource.Sweeper{
+		Name: "dsm_container_project",
+		F:    sweepContainerProjects,
 	})
 }
 
@@ -89,6 +94,41 @@ func sweepSharedFolders(_ string) error {
 
 	if len(errs) > 0 {
 		return fmt.Errorf("sweep shared folders: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func sweepContainerProjects(_ string) error {
+	c, err := sweeperClient()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+
+	projects, err := c.ListContainerProjects(ctx)
+	if err != nil {
+		// Ordinary virtual-DSM sweeps must keep working even though that target
+		// cannot install Container Manager.
+		if strings.Contains(err.Error(), "api error 102:") || strings.Contains(err.Error(), "api error 103:") {
+			return nil
+		}
+		return fmt.Errorf("sweep Container Manager projects: %w", err)
+	}
+
+	var errs []string
+	for _, project := range projects {
+		if !strings.HasPrefix(project.Name, accTestPrefix) {
+			continue
+		}
+		if err := c.DeleteContainerProject(ctx, project.ID); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", project.Name, err))
+			continue
+		}
+		fmt.Printf("swept Container Manager project %s\n", project.Name)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("sweep Container Manager projects: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }

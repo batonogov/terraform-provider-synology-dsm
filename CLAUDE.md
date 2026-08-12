@@ -23,7 +23,7 @@ Terraform provider for Synology DSM using Plugin Framework. Two layers:
 
 **`internal/client/`** — Synology DSM HTTP API client
 - `client.go`: Auth (SYNO.API.Auth v7), session management (SID + SynoToken), `DoAPI()` for GET requests, `DoAPIPost()` for POST requests (SID/SynoToken in query string, other params in body), retry with exponential backoff
-- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`, `package.go`: CRUD/lifecycle methods per resource
+- `user.go`, `group.go`, `share.go`, `share_permission.go`, `user_quota.go`, `package.go`, `container_project.go`: CRUD/lifecycle methods per resource
 
 **`internal/provider/`** — Terraform Plugin Framework wiring
 - `provider.go`: Provider schema (host/username/password/insecure), Configure creates client and logs in
@@ -57,6 +57,7 @@ Flow: `main.go` → `provider.New()` → `Configure()` creates `client.NewClient
 - **`get` API returns arrays** — `SYNO.Core.User.get` returns `{users: [...]}`, `SYNO.Core.Group.get` returns `{groups: [...]}` — not a bare object. `parseUser`/`parseGroup` must unpack the array wrapper first.
 - **Simple resources** (user, group): all CRUD via `DoAPI()` (GET). Delete sends name as JSON array.
 - **Packages**: installed state comes from `SYNO.Core.Package.list` v2 with lifecycle fields nested under `additional`. Installation follows Package Center's queue flow (`SYNO.Core.Package.Server.list` → `SYNO.Core.Package.Installation.get_queue` → `install` → poll); start/stop uses `SYNO.Core.Package.Control`. Package removal is opt-in in the Terraform resource.
+- **Container Manager projects**: `SYNO.Docker.Project` v1 uses POST and returns `list` as an object keyed by project UUID. Creation follows DSM's sequence: create the directory with `SYNO.FileStation.CreateFolder` → create an empty project → `update` the raw compose content → `build` → optional `start`. `name`, `share_path`, and `get_share_info.path` are JSON-quoted strings; `update.content` and direct-action `id` are raw form values. Current DSM builds expose direct `build`/`start`/`stop`; the client falls back on error 103 to the older GET streaming variants with a JSON-quoted id. A project `share_path` is a File Station path such as `/containers/s3-storage`, not `/volume1/containers/s3-storage`. Project deletion is opt-in and always sends `preserve_content=true`.
 - **Shared folder**: create (`method=create`) and update (`method=set`) via `DoAPIPost()` (POST) with `shareinfo` JSON — no `name_org`, which DSM rejects with 3301. Get/list/delete via `DoAPI()` (GET). API returns `enable_recycle_bin` (not `recyclebin`) and `quota_value` (written as `share_quota`).
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
 
@@ -131,22 +132,26 @@ task test-env-status  # Check status
 - No shared folders by default — tests must create them
 - No `homes` share — don't reference it in tests
 - User quota API returns error 102 — not supported on virtual DSM. The three `dsm_user_quota` acceptance tests skip unless `DSM_ACC_QUOTA=1` is set; run them against real hardware with that env var enabled.
+- Container Manager is unavailable on virtual DSM. `dsm_container_project` acceptance tests skip unless `DSM_ACC_CONTAINER_PROJECT=1` and `DSM_ACC_CONTAINER_IMAGE` are set against physical hardware.
 - Sessions are short-lived; the client re-authenticates automatically on error 119
 
 **Acceptance tests** (`*_acc_test.go` in repo root):
 - `TestAccPreCheck` validates env vars (`TF_ACC`, `SYNOLOGY_DSM_HOST`, `SYNOLOGY_DSM_USERNAME`, `SYNOLOGY_DSM_PASSWORD`)
 - `TestAccPreCheckQuota` additionally requires `DSM_ACC_QUOTA=1` (gates the quota tests; `SYNO.Core.Share.Quota` is error 102 on virtual DSM)
+- `TestAccPreCheckContainerProject` additionally requires `DSM_ACC_CONTAINER_PROJECT=1` and `DSM_ACC_CONTAINER_IMAGE` (gates project tests that build and run a real container on physical hardware)
 - `SYNOLOGY_DSM_PASSWORD` can be empty (supports DSM first-login state)
 - Tests use `internal/acctest` package — `ComposeTestResourceConfig()` wraps config with provider block
 - Each resource has: basic create, import (two-step: create then import), and data source tests
 - Tests that need a shared folder (share_permission, user_quota) create `dsm_shared_folder` as a dependency
 
-**Current acc-test status (26 PASS / 0 FAIL / 3 SKIP), verified 2026-08-07:**
+**Current virtual-DSM baseline (29 PASS / 0 FAIL / 6 SKIP):**
 - PASS: all `*_basic` and `*_import` tests for group, user, shared_folder, share_permission (two-step create→import), plus the data source tests
 - PASS: the six `dsm_user` tests — create, update, disabled, expiry date, import, and the data source
 - PASS: the six `dsm_shared_folder` tests — create, extended attributes, in-place update, replacement when compression is switched on, import, and the data source
 - PASS: the eight `dsm_user_home_service` tests — create, recycle-bin update, import, the `homes` share side effect, both destroy modes (`disable_on_destroy` on and off), the bad-location diagnostic, and the data source
+- PASS: the three `dsm_package` tests — adopt/import/data source for the built-in File Station package
 - SKIP: `TestAccUserQuota_basic`, `TestAccUserQuota_import`, `TestAccDataSourceUserQuota_basic` — gated behind `DSM_ACC_QUOTA=1`; `SYNO.Core.Share.Quota` is error 102 on virtual DSM, works on real hardware
+- SKIP: the `dsm_container_project` tests — gated behind `DSM_ACC_CONTAINER_PROJECT=1` and `DSM_ACC_CONTAINER_IMAGE`; Container Manager requires compatible physical hardware
 
 **Run acceptance tests:**
 ```bash
@@ -158,7 +163,7 @@ TF_ACC=1 go test -v -timeout 30m ./...
 
 ## Known Issues
 
-- ~~**Test state pollution**~~ — resolved: sweepers in `sweeper_test.go` delete leftovers named `tfacctest*` before a run. `task test-acc` sweeps automatically; `task sweep` runs it standalone. Only the root package registers sweepers, so the command is `go test . -sweep=all` (not `./...`, which fails with "flag provided but not defined").
+- ~~**Test state pollution**~~ — resolved: sweepers in `sweeper_test.go` delete leftovers named `tfacctest*` before a run. Container projects are swept before their backing shared folders; unsupported project APIs are skipped on virtual DSM. `task test-acc` sweeps automatically; `task sweep` runs it standalone. Only the root package registers sweepers, so the command is `go test . -sweep=all` (not `./...`, which fails with "flag provided but not defined").
 - ~~**`dsm_user.password` blocks clean import**~~ — resolved: `password` is now `Optional` + `Sensitive`, with `ModifyPlan` requiring it only when the user is actually being created. An imported account can be managed without putting the password in config.
 - **Explicit `""` on optional strings** — `nullableString` normalizes empty descriptions/emails to null on Read (fixing the omitted-attribute drift). Setting `description = ""` explicitly still produces a perpetual diff because DSM cannot represent an intentional empty string; see `internal/provider/helpers.go`.
 - **Quota untested on hardware** — the quota resource only validates on a real NAS (`DSM_ACC_QUOTA=1`); it is skipped on the virtual DSM.
@@ -166,7 +171,8 @@ TF_ACC=1 go test -v -timeout 30m ./...
 - **Share encryption not implemented** — `encryption` / `encrypt_pwd` plus the `SYNO.Core.Share.Crypto*` family (key management, mount/unmount) need their own design; deliberately out of scope for the extended-attributes work.
 - **`personal_photo_enable` is read-only in practice** — `SYNO.Core.User.Home` `set` accepts the parameter and answers `success:true`, but `get` keeps reporting `false` (likely needs the Synology Photos package). It is therefore exposed only on the `dsm_user_home_service` data source, not the resource, to avoid a perpetual diff.
 - **User home service needs the built-in `admin`** — other administrator accounts get error 119 from `SYNO.Core.User.Home` even with a valid session.
+- **Container projects unverified on hardware** — the wire contract is covered by stateful HTTP tests, but project create/build/start/update/delete acceptance requires compatible physical hardware and a pullable test image.
 
 ## Roadmap
 
-Remaining gaps from `.pi/audit-scenario-gap.md`: a `dsm_group_member` resource for atomic membership, per-share NFS rules (`SYNO.Core.FileServ.NFS.SharePrivilege`) and the global protocol services (`SYNO.Core.FileServ.SMB`/`NFS`/`FTP`), share encryption, Container Manager projects, reverse proxy, and certificates. Then: Synology Drive → Photos.
+Remaining gaps from `.pi/audit-scenario-gap.md`: a `dsm_group_member` resource for atomic membership, per-share NFS rules (`SYNO.Core.FileServ.NFS.SharePrivilege`) and the global protocol services (`SYNO.Core.FileServ.SMB`/`NFS`/`FTP`), share encryption, reverse proxy, and certificates. Then: Synology Drive → Photos.
