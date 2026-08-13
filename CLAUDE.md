@@ -158,6 +158,7 @@ Automated via **Release Please + GoReleaser**, split across two workflows so eac
 conventional commits → release PR → merge → tag + draft release → verified signed artifacts → publish → recompute next PR
 ```
 
+- **A release cannot be created while `main`'s head commit touches `.github/workflows/`** — GitHub refuses `POST /repos/{owner}/{repo}/releases` from `GITHUB_TOKEN` when the target commit adds or modifies a workflow file, because that needs the `workflows` scope, which an Actions token cannot hold. It surfaces as `release-please failed: Resource not accessible by integration` right after `Creating 1 releases for pull #NN`, with `contents: write` plainly granted in the job — so it reads like a permissions misconfiguration and is not one. The normal flow never hits it: merging a release PR makes the release commit (CHANGELOG + manifest only) the head. It bites when workflow 2 is re-run by hand after a CI change has landed on top. Fix: land any commit that does not touch `.github/workflows/`, then re-run — do not go hunting for a missing permission
 - **Never create tags manually** — Release Please manages versions
 - **Never skip conventional commits** — changelog and versioning depend on them
 - Dependabot keeps Go modules and GitHub Actions up to date (weekly, `deps:` / `ci:` prefix)
