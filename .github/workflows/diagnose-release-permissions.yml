@@ -1,0 +1,68 @@
+name: Diagnose Release Permissions
+
+# Temporary, manual-only diagnostic for the 403 that blocks release creation:
+# release-please fails with "Resource not accessible by integration" on
+# POST /repos/{owner}/{repo}/releases while the job plainly holds contents:
+# write — the same grant that published v0.2.0. Every hypothesis checked from
+# outside (ruleset, repository workflow permissions, job permissions, head
+# commit touching .github/workflows) has been ruled out, so this asks GitHub
+# directly and prints the status code and body it answers with.
+#
+# Delete this workflow once the cause is known.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe release endpoints
+    runs-on: ubuntu-latest
+    # Deliberately identical to the Tag Release job in release-publish.yml.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # The commit release-please targets: the squash merge of release PR #93.
+          RELEASE_SHA: aa4ab5922dab279695e67f114dfcb8f6c9b07ffd
+        run: |
+          api="https://api.github.com/repos/$REPO"
+
+          probe() {
+            label="$1"; url="$2"; payload="$3"
+            echo "::group::$label"
+            code=$(curl -sS -o /tmp/body.json -w '%{http_code}' -X POST "$url" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d "$payload")
+            echo "HTTP $code"
+            cat /tmp/body.json
+            echo
+            echo "::endgroup::"
+          }
+
+          # 1. Exactly what release-please does: a draft release on the release commit.
+          probe "draft release on the release commit" "$api/releases" \
+            "{\"tag_name\":\"diag-actions-token-tmp\",\"target_commitish\":\"$RELEASE_SHA\",\"draft\":true,\"name\":\"diagnostic\"}"
+
+          # 2. Same, but targeting the branch — isolates whether the target matters.
+          probe "draft release on main" "$api/releases" \
+            '{"tag_name":"diag-actions-token-main-tmp","target_commitish":"main","draft":true,"name":"diagnostic"}'
+
+          # 3. A bare tag ref — isolates whether tag creation is what is refused.
+          probe "create tag ref" "$api/git/refs" \
+            "{\"ref\":\"refs/tags/diag-actions-tag-tmp\",\"sha\":\"$RELEASE_SHA\"}"
+
+          echo "::group::cleanup"
+          for tag in diag-actions-token-tmp diag-actions-token-main-tmp; do
+            id=$(gh api "repos/$REPO/releases" --jq ".[] | select(.tag_name==\"$tag\") | .id" || true)
+            [ -n "$id" ] && gh api -X DELETE "repos/$REPO/releases/$id" && echo "deleted release $tag"
+          done
+          gh api -X DELETE "repos/$REPO/git/refs/tags/diag-actions-tag-tmp" 2>/dev/null && echo "deleted tag ref" || true
+          echo "::endgroup::"
