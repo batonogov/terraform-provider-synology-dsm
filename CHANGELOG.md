@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.3.0...v0.3.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* stop waiting for WARNING to clear after a container project build ([#102](https://github.com/batonogov/terraform-provider-synology-dsm/issues/102)) ([d342320](https://github.com/batonogov/terraform-provider-synology-dsm/commit/d342320b5411719854928ca47fca71c64c630936)), closes [#101](https://github.com/batonogov/terraform-provider-synology-dsm/issues/101)
+
 ## [0.3.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.2.0...v0.3.0) (2026-08-13)
 
 
