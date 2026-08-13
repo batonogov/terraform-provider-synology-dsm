@@ -50,7 +50,7 @@ type ContainerProject struct {
 // anyone who wants to assert on it.
 func (p ContainerProject) Running() bool {
 	switch strings.ToUpper(p.Status) {
-	case "RUNNING", statusWarning:
+	case statusRunning, statusWarning:
 		return true
 	default:
 		return false
@@ -193,7 +193,7 @@ func (c *Client) CreateContainerProject(ctx context.Context, name, sharePath, co
 	if err := c.runContainerProjectAction(ctx, project.ID, "build"); err != nil {
 		return nil, err
 	}
-	if _, err := c.waitForContainerProjectRunningState(ctx, project.ID, false); err != nil {
+	if _, err := c.waitForContainerProjectSettled(ctx, project.ID); err != nil {
 		return nil, err
 	}
 	if running {
@@ -203,7 +203,7 @@ func (c *Client) CreateContainerProject(ctx context.Context, name, sharePath, co
 	}
 
 	return c.waitForContainerProject(ctx, project.ID, func(p *ContainerProject) bool {
-		return p.Running() == running && !isTransientContainerProjectStatus(p.Status)
+		return containerProjectReached(p, running)
 	})
 }
 
@@ -235,7 +235,7 @@ func (c *Client) UpdateContainerProject(ctx context.Context, id, composeYAML str
 		if err := c.runContainerProjectAction(ctx, id, "build"); err != nil {
 			return nil, err
 		}
-		if _, err := c.waitForContainerProjectRunningState(ctx, id, false); err != nil {
+		if _, err := c.waitForContainerProjectSettled(ctx, id); err != nil {
 			return nil, err
 		}
 		if running {
@@ -254,7 +254,7 @@ func (c *Client) UpdateContainerProject(ctx context.Context, id, composeYAML str
 	}
 
 	return c.waitForContainerProject(ctx, id, func(p *ContainerProject) bool {
-		return p.Running() == running && !isTransientContainerProjectStatus(p.Status)
+		return containerProjectReached(p, running)
 	})
 }
 
@@ -486,7 +486,51 @@ func readContainerProjectActionStream(response *http.Response) ([]string, error)
 
 func (c *Client) waitForContainerProjectRunningState(ctx context.Context, id string, running bool) (*ContainerProject, error) {
 	return c.waitForContainerProject(ctx, id, func(project *ContainerProject) bool {
-		return project.Running() == running && !isTransientContainerProjectStatus(project.Status)
+		return containerProjectReached(project, running)
+	})
+}
+
+// containerProjectReached decides whether a project has arrived at the
+// requested running state. It is deliberately asymmetric about WARNING.
+//
+// WARNING means "some containers are running and some are not", which is a
+// steady state in both directions: a project with a one-shot container sits
+// there while up, and a project that was never started sits there too once that
+// container has run and exited. Requiring WARNING to clear before a project
+// counts as stopped therefore waits for something that never happens — the
+// ten-minute timeout of issue #101, in the direction the build path does not
+// cover.
+//
+// So only an outright RUNNING blocks "stopped". The cost is that stopping a
+// project that stays in WARNING — because a container refused to die — is
+// reported as success. That is the same trade #73 accepted in the other
+// direction, and the status is in state either way for anyone who wants to
+// assert on it.
+func containerProjectReached(project *ContainerProject, running bool) bool {
+	if isTransientContainerProjectStatus(project.Status) {
+		return false
+	}
+	if running {
+		return project.Running()
+	}
+	return !strings.EqualFold(project.Status, statusRunning)
+}
+
+// statusRunning is DSM's "every container is up" status.
+const statusRunning = "RUNNING"
+
+// waitForContainerProjectSettled waits for the status to stop being transient
+// without judging whether the project is up.
+//
+// This is what a build must wait for. Waiting for "not running" there was a
+// target the project can never reach once a one-shot container has run: the
+// build leaves it in WARNING, WARNING counts as running (see Running), and so
+// the wait burned the full ten-minute timeout and failed an apply whose
+// services were fine — the exact failure #73 set out to fix, displaced one step
+// earlier in the sequence (issue #101).
+func (c *Client) waitForContainerProjectSettled(ctx context.Context, id string) (*ContainerProject, error) {
+	return c.waitForContainerProject(ctx, id, func(project *ContainerProject) bool {
+		return !isTransientContainerProjectStatus(project.Status)
 	})
 }
 

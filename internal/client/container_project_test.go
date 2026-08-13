@@ -595,3 +595,104 @@ func TestUpdateContainerProjectCompose_TimeoutWithoutWriteStillFails(t *testing.
 		t.Errorf("the timeout should survive as the cause, got: %v", err)
 	}
 }
+
+// TestClient_CreateContainerProject_SettlesWhenBuildLeavesWarning is issue #101.
+//
+// A compose file with a one-shot container leaves the project in WARNING as
+// soon as the build has run: the container did its work and exited. The create
+// path then waited for the project to be *not running* before starting it —
+// and WARNING counts as running since #73, so the wait could only end at the
+// ten-minute deadline, failing an apply whose services were about to be fine.
+func TestClient_CreateContainerProject_SettlesWhenBuildLeavesWarning(t *testing.T) {
+	restore := shrinkContainerProjectPolling(t)
+	defer restore()
+
+	const compose = "services:\n  app:\n    image: nextcloud:33-fpm-alpine\n  provision:\n    image: nextcloud:33-fpm-alpine\n    restart: \"no\"\n"
+	created := false
+	storedCompose := ""
+	// STOPPED until the build runs; WARNING from then on, which is what DSM
+	// reports once the one-shot container has exited 0.
+	status := "STOPPED"
+	var actions []string
+
+	client, server := newContainerProjectTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		api, method := containerProjectRequest(r)
+		project := map[string]interface{}{
+			"id": "project-uuid", "name": "nextcloud", "share_path": "/docker/nextcloud",
+			"path": "/volume1/docker/nextcloud", "status": status, "content": storedCompose,
+		}
+		switch {
+		case api == "SYNO.Docker.Project" && method == "list":
+			projects := map[string]interface{}{}
+			if created {
+				projects["project-uuid"] = project
+			}
+			writeContainerProjectResponse(w, projects)
+		case api == "SYNO.FileStation.CreateFolder" && method == "create":
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case api == "SYNO.Docker.Project" && method == "create":
+			created = true
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case api == "SYNO.Docker.Project" && method == "update":
+			storedCompose = r.FormValue("content")
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case api == "SYNO.Docker.Project" && method == "build":
+			actions = append(actions, "build")
+			status = "WARNING"
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case api == "SYNO.Docker.Project" && method == "start":
+			actions = append(actions, "start")
+			// Still WARNING after start: the one-shot container stays exited.
+			status = "WARNING"
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		case api == "SYNO.Docker.Project" && method == "get":
+			writeContainerProjectResponse(w, project)
+		default:
+			t.Fatalf("unexpected request: %s %s", api, method)
+		}
+	})
+	defer server.Close()
+
+	result, err := client.CreateContainerProject(context.Background(), "nextcloud", "/docker/nextcloud", compose, true)
+	if err != nil {
+		t.Fatalf("create must not wait out the deadline on WARNING: %v", err)
+	}
+	if result.Status != "WARNING" || !result.Running() {
+		t.Errorf("unexpected project: %+v", result)
+	}
+	// The build must not swallow the start: a project that never starts would
+	// pass a "did it settle" check while doing nothing.
+	if !reflect.DeepEqual(actions, []string{"build", "start"}) {
+		t.Errorf("actions = %v, want the build to be followed by a start", actions)
+	}
+}
+
+// TestContainerProjectReached_WarningCountsAsStopped covers the same trap in the
+// other direction: with running = false nothing ever issues a start, so a
+// project left in WARNING by its build would wait out the deadline too.
+func TestContainerProjectReached_WarningCountsAsStopped(t *testing.T) {
+	tests := []struct {
+		status  string
+		running bool
+		want    bool
+	}{
+		{status: "WARNING", running: true, want: true},
+		{status: "WARNING", running: false, want: true},
+		{status: "RUNNING", running: true, want: true},
+		// Only an outright RUNNING keeps "stopped" unreached.
+		{status: "RUNNING", running: false, want: false},
+		{status: "STOPPED", running: false, want: true},
+		{status: "STOPPED", running: true, want: false},
+		// Transient statuses are never the destination, in either direction.
+		{status: "BUILDING", running: true, want: false},
+		{status: "BUILDING", running: false, want: false},
+		{status: "STOPPING", running: false, want: false},
+	}
+
+	for _, tt := range tests {
+		got := containerProjectReached(&ContainerProject{Status: tt.status}, tt.running)
+		if got != tt.want {
+			t.Errorf("containerProjectReached(%q, running=%v) = %v, want %v", tt.status, tt.running, got, tt.want)
+		}
+	}
+}
