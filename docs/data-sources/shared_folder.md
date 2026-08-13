@@ -3,12 +3,12 @@
 page_title: "dsm_shared_folder Data Source - terraform-provider-synology-dsm"
 subcategory: ""
 description: |-
-  Read-only data source for looking up an existing DSM shared folder.
+  Read-only data source for looking up an existing DSM shared folder, including the POSIX mode and ownership it has on disk — which is what a Docker bind mount of the folder enforces, and which DSM offers no API to change.
 ---
 
 # dsm_shared_folder (Data Source)
 
-Read-only data source for looking up an existing DSM shared folder.
+Read-only data source for looking up an existing DSM shared folder, including the POSIX mode and ownership it has on disk — which is what a Docker bind mount of the folder enforces, and which DSM offers no API to change.
 
 ## Example Usage
 
@@ -27,12 +27,18 @@ data "dsm_shared_folder" "team_data" {
 
 ### Read-Only
 
+- `acl_mode` (Boolean) Whether the path takes its access rules from a Synology ACL rather than from POSIX mode bits. When true, `posix_mode` is usually `"000"` and says nothing about who may actually read the path through DSM — but it is exactly what a Docker bind mount enforces. Read-only.
 - `description` (String) Description of the shared folder.
 - `enable_recycle_bin` (Boolean) Whether the recycle bin is enabled.
 - `enable_share_compress` (Boolean) Whether file compression is enabled.
 - `enable_share_cow` (Boolean) Whether data checksum for advanced data integrity (copy-on-write) is enabled.
 - `hidden` (Boolean) Whether the shared folder is hidden in network browsing.
 - `id` (String) Unique identifier for the shared folder (name).
+- `posix_gid` (Number) Numeric group id of the path on disk. Read-only.
+- `posix_group` (String) Name of the POSIX group of the path on disk. Read-only.
+- `posix_mode` (String) POSIX mode of the path on disk, as DSM reports it — the digits are octal, so `"755"` is `rwxr-xr-x` and `"000"` means no POSIX access at all. **Read-only:** no DSM API writes POSIX bits, so this provider can show the mode but not set it. `"000"` together with `acl_mode = true` is DSM's normal state for a folder whose access rules live in a Synology ACL; it breaks anything that consults POSIX bits instead, notably Docker bind mounts. Null when File Station is unavailable or does not report the path.
+- `posix_owner` (String) Name of the POSIX owner of the path on disk. Read-only.
+- `posix_uid` (Number) Numeric owner id of the path on disk. Read-only; useful for matching the uid a container runs as.
 - `recycle_bin_admin_only` (Boolean) Whether recycle bin access is restricted to administrators.
 - `share_quota` (Number) Quota for the whole shared folder in gigabytes. `0` means unlimited.
 - `uuid` (String) UUID assigned by DSM.

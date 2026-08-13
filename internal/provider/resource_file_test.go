@@ -186,7 +186,13 @@ func fileReadServer(t *testing.T, filePath string, content []byte, isDir bool) *
 		case "SYNO.FileStation.List":
 			raw, _ := json.Marshal(map[string]interface{}{"files": []map[string]interface{}{{
 				"path": filePath, "name": filePath[strings.LastIndex(filePath, "/")+1:], "isdir": isDir,
-				"additional": map[string]interface{}{"size": len(content)},
+				"additional": map[string]interface{}{
+					"size": len(content),
+					// The shape issue #94 reports: an ACL-mode path whose POSIX
+					// bits are cleared, which is what a bind mount enforces.
+					"perm":  map[string]interface{}{"posix": 0, "is_acl_mode": true},
+					"owner": map[string]interface{}{"user": "terraform", "group": "users", "uid": 1027, "gid": 100},
+				},
 			}}})
 			_, _ = w.Write(append(append([]byte(`{"success":true,"data":`), raw...), '}'))
 		case "SYNO.FileStation.Download":
@@ -280,6 +286,61 @@ func TestFileResource_Read_PopulatesEveryFieldAfterImport(t *testing.T) {
 	}
 	if model.Checksum.ValueString() != sha256Hex(remote) || model.Size.ValueInt64() != int64(len(remote)) {
 		t.Errorf("checksum/size not populated: %+v", model)
+	}
+}
+
+// TestFileResource_Read_ReportsPosixPermissions covers the read-only block from
+// issue #94. The values travel through an embedded struct in the model, which
+// the framework only resolves by reflection — a rename that breaks the mapping
+// shows up here as null attributes rather than at apply time on a real NAS.
+func TestFileResource_Read_ReportsPosixPermissions(t *testing.T) {
+	server := fileReadServer(t, "/containers/conf/s3.json", []byte("{}\n"), false)
+
+	model, _ := readFileResource(t, server, map[string]tftypes.Value{
+		"id": tfString("/containers/conf/s3.json"),
+	})
+
+	if model.PosixMode.ValueString() != "000" {
+		t.Errorf("posix_mode = %q, want %q — a cleared mode must not render as \"0\"", model.PosixMode.ValueString(), "000")
+	}
+	if !model.ACLMode.ValueBool() {
+		t.Error("acl_mode must report that the path takes its rules from a Synology ACL")
+	}
+	if model.PosixOwner.ValueString() != "terraform" || model.PosixGroup.ValueString() != "users" {
+		t.Errorf("owner/group = %q/%q, want terraform/users", model.PosixOwner.ValueString(), model.PosixGroup.ValueString())
+	}
+	if model.PosixUID.ValueInt64() != 1027 || model.PosixGID.ValueInt64() != 100 {
+		t.Errorf("uid/gid = %d/%d, want 1027/100", model.PosixUID.ValueInt64(), model.PosixGID.ValueInt64())
+	}
+}
+
+// TestFileResource_Read_PosixPermissionsStayNullWhenUnreported keeps the block
+// best effort: File Station can be absent or restricted, and a file this
+// provider did manage to read must not be reported as broken because of it.
+func TestFileResource_Read_PosixPermissionsStayNullWhenUnreported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("api") {
+		case "SYNO.FileStation.List":
+			raw, _ := json.Marshal(map[string]interface{}{"files": []map[string]interface{}{{
+				"path": "/containers/conf/s3.json", "name": "s3.json", "isdir": false,
+				"additional": map[string]interface{}{"size": 3},
+			}}})
+			_, _ = w.Write(append(append([]byte(`{"success":true,"data":`), raw...), '}'))
+		case "SYNO.FileStation.Download":
+			w.Header().Set("Content-Disposition", `attachment; filename="file"`)
+			_, _ = w.Write([]byte("{}\n"))
+		default:
+			t.Errorf("unexpected API call: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	model, _ := readFileResource(t, server, map[string]tftypes.Value{
+		"id": tfString("/containers/conf/s3.json"),
+	})
+
+	if !model.PosixMode.IsNull() || !model.ACLMode.IsNull() || !model.PosixUID.IsNull() {
+		t.Errorf("unreported permissions must stay null, got %+v", model.posixPermissionsModel)
 	}
 }
 

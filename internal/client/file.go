@@ -40,6 +40,34 @@ type FileInfo struct {
 	Name  string
 	Size  int64
 	IsDir bool
+	// Permissions is nil when DSM did not report the perm/owner block, which is
+	// what happens when the caller did not ask for it or the DSM build does not
+	// return it. A missing block is not an error: it means "unknown", and every
+	// consumer of it is read-only.
+	Permissions *PathPermissions
+}
+
+// PathPermissions is the ownership and POSIX mode DSM reports for a path.
+//
+// It is read-only on purpose: no DSM HTTP API writes POSIX bits or ownership.
+// SYNO.FileStation.Property.set accepts a mode parameter under every spelling
+// tried and changes nothing, SYNO.Core.ACL manages Synology ACLs rather than
+// mode bits, and SYNO.FileStation.Property.ACLOwner exposes get only. The
+// findings are in .pi/recon-posix-mode-2026-08-13.md.
+type PathPermissions struct {
+	// PosixMode is the mode as DSM prints it: the decimal digits are the octal
+	// digits, so 755 means rwxr-xr-x and 0 means no POSIX access at all. It is
+	// not a bitmask — do not compare it against 0o755.
+	PosixMode int
+	// IsACLMode reports that the path takes its access rules from a Synology
+	// ACL. This is the usual reason PosixMode is 0: DSM keeps the real rules in
+	// the ACL, and anything that only consults POSIX bits — a Docker bind mount,
+	// for one — sees no access.
+	IsACLMode bool
+	Owner     string
+	Group     string
+	UID       int64
+	GID       int64
 }
 
 // UploadFile writes content to dirPath/name, creating the parent directories
@@ -78,11 +106,12 @@ func (c *Client) UploadFile(ctx context.Context, dirPath, name string, content [
 	return nil
 }
 
-// GetFileInfo reads File Station metadata for a single path.
+// GetFileInfo reads File Station metadata for a single path, including the
+// ownership and POSIX mode DSM reports for it.
 func (c *Client) GetFileInfo(ctx context.Context, filePath string) (*FileInfo, error) {
 	params := url.Values{}
 	params.Set("path", jsonStringArray(filePath))
-	params.Set("additional", `["size","type"]`)
+	params.Set("additional", `["size","type","perm","owner"]`)
 
 	data, err := c.DoAPI(ctx, "SYNO.FileStation.List", "2", "getinfo", params)
 	if err != nil {
@@ -422,8 +451,56 @@ func parseFileInfo(raw json.RawMessage, filePath string) (*FileInfo, error) {
 		if size, ok := additional["size"].(float64); ok {
 			info.Size = int64(size)
 		}
+		info.Permissions = parsePathPermissions(additional)
 	}
 	return info, nil
+}
+
+// parsePathPermissions reads the perm/owner block of a getinfo entry. It
+// returns nil when neither is present, so "DSM did not say" stays
+// distinguishable from "mode 000, owned by root" — which is exactly the state
+// this data exists to make visible.
+func parsePathPermissions(additional map[string]interface{}) *PathPermissions {
+	perm, hasPerm := additional["perm"].(map[string]interface{})
+	owner, hasOwner := additional["owner"].(map[string]interface{})
+	if !hasPerm && !hasOwner {
+		return nil
+	}
+
+	permissions := &PathPermissions{}
+	if hasPerm {
+		if posix, ok := perm["posix"].(float64); ok {
+			permissions.PosixMode = int(posix)
+		}
+		if aclMode, ok := perm["is_acl_mode"].(bool); ok {
+			permissions.IsACLMode = aclMode
+		}
+	}
+	if hasOwner {
+		permissions.Owner = stringValue(owner, "user")
+		permissions.Group = stringValue(owner, "group")
+		if uid, ok := owner["uid"].(float64); ok {
+			permissions.UID = int64(uid)
+		}
+		if gid, ok := owner["gid"].(float64); ok {
+			permissions.GID = int64(gid)
+		}
+	}
+	return permissions
+}
+
+// GetPathPermissions reads the ownership and POSIX mode of any File Station
+// path, including a shared folder root such as "/containers".
+//
+// It exists separately from GetFileInfo because a shared folder is managed
+// through SYNO.Core.Share, which reports none of this: DSM's own share API has
+// no notion of the POSIX bits its shares land on disk with.
+func (c *Client) GetPathPermissions(ctx context.Context, filePath string) (*PathPermissions, error) {
+	info, err := c.GetFileInfo(ctx, filePath)
+	if err != nil {
+		return nil, err
+	}
+	return info.Permissions, nil
 }
 
 func boolValue(object map[string]interface{}, key string) bool {

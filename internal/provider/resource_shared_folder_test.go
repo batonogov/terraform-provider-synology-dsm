@@ -2,8 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -60,6 +64,118 @@ func TestSharedFolderResource_Schema(t *testing.T) {
 		if !attrs[name].IsComputed() {
 			t.Errorf("attribute %q must be computed", name)
 		}
+	}
+}
+
+// TestSharedFolderResource_Read_ReportsPosixPermissions covers issue #94 for a
+// shared folder: SYNO.Core.Share reports nothing about the POSIX mode the
+// folder lands on disk with, so Read asks File Station for it — by the bare
+// share name, which is how File Station addresses a share root.
+func TestSharedFolderResource_Read_ReportsPosixPermissions(t *testing.T) {
+	var permissionPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("api") {
+		case "SYNO.Core.Share":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"name": "containers", "vol_path": "/volume1", "uuid": "uuid-1",
+				},
+			})
+		case "SYNO.FileStation.List":
+			permissionPath = r.URL.Query().Get("path")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{"files": []map[string]interface{}{{
+					"path": "/containers", "name": "containers", "isdir": true,
+					"additional": map[string]interface{}{
+						"perm":  map[string]interface{}{"posix": 0, "is_acl_mode": true},
+						"owner": map[string]interface{}{"user": "root", "group": "root", "uid": 0, "gid": 0},
+					},
+				}}},
+			})
+		default:
+			t.Errorf("unexpected API call: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	sch := sharedFolderSchema(t).Schema
+	objType := sch.Type().TerraformType(context.Background()).(tftypes.Object)
+	attrs := map[string]tftypes.Value{}
+	for name, typ := range objType.AttributeTypes {
+		attrs[name] = tftypes.NewValue(typ, nil)
+	}
+	attrs["id"] = tftypes.NewValue(tftypes.String, "containers")
+	raw := tftypes.NewValue(objType, attrs)
+
+	r := &sharedFolderResource{client: client.NewClient(server.URL, "admin", "", false)}
+	resp := &resource.ReadResponse{State: tfsdk.State{Schema: sch, Raw: raw}}
+	r.Read(t.Context(), resource.ReadRequest{State: tfsdk.State{Schema: sch, Raw: raw}}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read returned errors: %v", resp.Diagnostics)
+	}
+
+	var model sharedFolderResourceModel
+	if diags := resp.State.Get(t.Context(), &model); diags.HasError() {
+		t.Fatalf("reading state failed: %v", diags)
+	}
+
+	if permissionPath != `["/containers"]` {
+		t.Errorf("permission lookup used path %q, want the File Station share root", permissionPath)
+	}
+	if model.PosixMode.ValueString() != "000" || !model.ACLMode.ValueBool() {
+		t.Errorf("posix_mode/acl_mode = %q/%v, want \"000\"/true", model.PosixMode.ValueString(), model.ACLMode.ValueBool())
+	}
+	if model.PosixOwner.ValueString() != "root" || model.PosixUID.ValueInt64() != 0 {
+		t.Errorf("ownership not reported: %+v", model.posixPermissionsModel)
+	}
+}
+
+// TestSharedFolderResource_Read_SurvivesMissingFileStation keeps the extra read
+// best effort: File Station is a package, and a share this provider read
+// successfully must not fail to refresh because an informational attribute
+// could not be filled in.
+func TestSharedFolderResource_Read_SurvivesMissingFileStation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("api") == "SYNO.Core.Share" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"data":    map[string]interface{}{"name": "containers", "vol_path": "/volume1"},
+			})
+			return
+		}
+		// 103: the File Station API is not installed on this NAS.
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false, "error": map[string]int{"code": 103},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	sch := sharedFolderSchema(t).Schema
+	objType := sch.Type().TerraformType(context.Background()).(tftypes.Object)
+	attrs := map[string]tftypes.Value{}
+	for name, typ := range objType.AttributeTypes {
+		attrs[name] = tftypes.NewValue(typ, nil)
+	}
+	attrs["id"] = tftypes.NewValue(tftypes.String, "containers")
+	raw := tftypes.NewValue(objType, attrs)
+
+	r := &sharedFolderResource{client: client.NewClient(server.URL, "admin", "", false)}
+	resp := &resource.ReadResponse{State: tfsdk.State{Schema: sch, Raw: raw}}
+	r.Read(t.Context(), resource.ReadRequest{State: tfsdk.State{Schema: sch, Raw: raw}}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read must not fail when File Station is unavailable: %v", resp.Diagnostics)
+	}
+
+	var model sharedFolderResourceModel
+	if diags := resp.State.Get(t.Context(), &model); diags.HasError() {
+		t.Fatalf("reading state failed: %v", diags)
+	}
+	if !model.PosixMode.IsNull() || !model.ACLMode.IsNull() {
+		t.Errorf("permissions must stay null when File Station cannot answer: %+v", model.posixPermissionsModel)
 	}
 }
 

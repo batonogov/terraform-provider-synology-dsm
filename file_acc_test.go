@@ -43,6 +43,11 @@ func TestAccFile_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("dsm_file.test", "content", initial),
 					resource.TestCheckResourceAttr("dsm_file.test", "size", fmt.Sprint(len(initial))),
 					resource.TestCheckResourceAttrSet("dsm_file.test", "checksum"),
+					// Read-only, from File Station (issue #94): the mode a
+					// container bind-mounting this path would be subject to.
+					resource.TestCheckResourceAttrSet("dsm_file.test", "posix_mode"),
+					resource.TestCheckResourceAttrSet("dsm_file.test", "posix_owner"),
+					resource.TestCheckResourceAttrSet("dsm_file.test", "posix_uid"),
 				),
 			},
 			{

@@ -31,6 +31,16 @@ resource "dsm_shared_folder" "test" {
 					resource.TestCheckResourceAttr("dsm_shared_folder.test", "enable_recycle_bin", "true"),
 					resource.TestCheckResourceAttrSet("dsm_shared_folder.test", "id"),
 					resource.TestCheckResourceAttrSet("dsm_shared_folder.test", "uuid"),
+					// Read-only, from File Station (issue #94). The value itself
+					// differs per DSM — virtual DSM reports 777 where a DS1525+ in
+					// ACL mode reports 000 — so only its presence is asserted.
+					// These three need the File Station package on the target NAS;
+					// without it the attributes are null by design and this step
+					// fails, which is the one thing to check before blaming the
+					// shared folder itself.
+					resource.TestCheckResourceAttrSet("dsm_shared_folder.test", "posix_mode"),
+					resource.TestCheckResourceAttrSet("dsm_shared_folder.test", "posix_owner"),
+					resource.TestCheckResourceAttrSet("dsm_shared_folder.test", "acl_mode"),
 				),
 			},
 		},
