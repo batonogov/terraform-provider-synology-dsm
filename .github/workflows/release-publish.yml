@@ -1,17 +1,28 @@
 name: Release Publish
 
 # Workflow 2 — tags a release and publishes verified artifacts. Triggered when a
-# release PR carrying the "autorelease: tagged" label is merged. It creates the tag
+# release PR carrying the "autorelease: pending" label is merged. It creates the tag
 # and draft release (skip-github-pull-request: true, so it never opens the next PR),
 # builds/signs/verifies the artifacts, flips the PR label to "autorelease:
 # published", then re-runs the release-please workflow so the next release PR is
 # computed against the now-published state — i.e. with a delta-only changelog.
+#
+# The label to gate on is "pending", not "tagged": Release Please labels a release
+# PR "autorelease: pending" when it opens it and only relabels it "autorelease:
+# tagged" after it has created the release — which is this workflow's own job. A
+# closed-PR event therefore never carries "tagged", so gating on it skipped every
+# release (0.3.0 was merged and left untagged that way).
+#
+# workflow_dispatch exists for exactly that failure mode: a release PR merged while
+# this workflow was skipped or failing stays labelled "pending", so a manual run
+# picks it up and finishes the release.
 on:
   pull_request:
     types:
       - closed
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: release-publish
@@ -23,7 +34,7 @@ permissions:
 jobs:
   release:
     name: Tag Release
-    if: "${{ github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'autorelease: tagged') }}"
+    if: "${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'autorelease: pending')) }}"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,9 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # Needed to move the release PR from "autorelease: tagged" to
-      # "autorelease: published" once the artifacts have verified, and to re-run
-      # the release-please workflow below.
+      # Needed to move the release PR to "autorelease: published" once the
+      # artifacts have verified, and to re-run the release-please workflow below.
       pull-requests: write
       actions: write
     steps:
