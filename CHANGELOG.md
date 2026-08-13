@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.2.0...v0.3.0) (2026-08-13)
+
+
+### Features
+
+* report POSIX mode and ownership on shared folders and files ([#95](https://github.com/batonogov/terraform-provider-synology-dsm/issues/95)) ([0273296](https://github.com/batonogov/terraform-provider-synology-dsm/commit/0273296f855d8c9465d68ad2fa56f34208ed4767))
+
+
+### Bug Fixes
+
+* drop hardcoded provider version from examples and docs ([#92](https://github.com/batonogov/terraform-provider-synology-dsm/issues/92)) ([69f076b](https://github.com/batonogov/terraform-provider-synology-dsm/commit/69f076b873e3abad3f01bdb1b2c1e0f118d3bc1e))
+
 ## [0.2.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.1.1...v0.2.0) (2026-08-12)
 
 
