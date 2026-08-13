@@ -16,6 +16,15 @@ name: Release Publish
 # workflow_dispatch exists for exactly that failure mode: a release PR merged while
 # this workflow was skipped or failing stays labelled "pending", so a manual run
 # picks it up and finishes the release.
+#
+# That manual run only works while the release commit is still the head of main.
+# GitHub refuses to create a tag or a release on an older commit from GITHUB_TOKEN
+# — measured, not guessed: a draft release on the release commit answers 403
+# "Resource not accessible by integration" while the identical call against the
+# head answers 201. Once other commits have landed on top, the release can no
+# longer be produced by this workflow at all, which is what the `tag` input is
+# for: create the tag and a draft release with a personal token, then run this
+# workflow with that tag to build, sign, verify and publish into the draft.
 on:
   pull_request:
     types:
@@ -23,6 +32,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish. Leave empty for the normal flow; set it only to finish a release whose commit is no longer the head of main."
+        required: false
+        default: ""
 
 concurrency:
   group: release-publish
@@ -34,7 +48,9 @@ permissions:
 jobs:
   release:
     name: Tag Release
-    if: "${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'autorelease: pending')) }}"
+    # Skipped entirely when a tag is supplied: that path exists precisely because
+    # Release Please cannot create the release any more.
+    if: "${{ inputs.tag == '' && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'autorelease: pending'))) }}"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -57,7 +73,9 @@ jobs:
   goreleaser:
     name: Build, Sign, and Publish Release
     needs: release
-    if: needs.release.outputs.release_created == 'true'
+    # always() because the release job is skipped on the manual-tag path, and a
+    # skipped dependency would otherwise skip this one too.
+    if: "${{ always() && (needs.release.outputs.release_created == 'true' || inputs.tag != '') }}"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,10 +83,13 @@ jobs:
       # artifacts have verified, and to re-run the release-please workflow below.
       pull-requests: write
       actions: write
+    env:
+      # One name for both paths: the supplied tag, or the one Release Please made.
+      TAG_NAME: ${{ inputs.tag != '' && inputs.tag || needs.release.outputs.tag_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release.outputs.release_sha }}
+          ref: ${{ inputs.tag != '' && inputs.tag || needs.release.outputs.release_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef515d2fc7ad053ef454303e # v7.0.0
@@ -77,9 +98,17 @@ jobs:
 
       - name: Ensure release tag
         env:
+          # Empty on the manual-tag path, where the tag is the checkout ref and
+          # already exists — there is nothing to create and nothing to compare.
           RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
-          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+          MANUAL_TAG: ${{ inputs.tag }}
         run: |
+          if [ -n "$MANUAL_TAG" ]; then
+            git fetch --force origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+            test "$(git rev-list -n 1 "$TAG_NAME")" = "$(git rev-parse HEAD)"
+            exit 0
+          fi
+
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 
           remote_tag_sha="$(git ls-remote --refs origin "refs/tags/$TAG_NAME" | cut -f1)"
@@ -110,8 +139,6 @@ jobs:
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
       - name: Verify release artifacts
-        env:
-          TAG_NAME: ${{ needs.release.outputs.tag_name }}
         run: |
           version=${TAG_NAME#v}
           ./scripts/verify-release-artifacts.sh dist "$version"
@@ -122,7 +149,6 @@ jobs:
       - name: Publish verified draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release.outputs.tag_name }}
         run: gh release edit "$TAG_NAME" --draft=false --latest
 
       # Release Please marks a release published itself — but only for releases it
@@ -140,14 +166,23 @@ jobs:
           REPO: ${{ github.repository }}
           RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
         run: |
-          # The release commit is the squash-merge of the release PR, so the commit
-          # resolves back to the PR that produced it.
-          pr_number="$(gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" --jq '.[0].number')"
+          if [ -n "$RELEASE_SHA" ]; then
+            # The release commit is the squash-merge of the release PR, so the commit
+            # resolves back to the PR that produced it.
+            pr_number="$(gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" --jq '.[0].number')"
+          else
+            # Manual-tag path: Release Please never ran, so there is no release sha
+            # to resolve. The PR it would have relabelled is the merged one still
+            # sitting on "autorelease: pending" — the same one it looks for itself.
+            pr_number="$(gh api "repos/$REPO/pulls?state=closed&sort=updated&direction=desc&per_page=50" \
+              --jq '[.[] | select(.merged_at != null) | select(any(.labels[]; .name == "autorelease: pending"))][0].number')"
+          fi
           test -n "$pr_number"
 
           gh pr edit "$pr_number" \
             --add-label "autorelease: published" \
-            --remove-label "autorelease: tagged"
+            --remove-label "autorelease: tagged" \
+            --remove-label "autorelease: pending"
 
       # The previous release is now labelled "autorelease: published", so re-running
       # the release-please workflow computes the next release PR as a delta since
