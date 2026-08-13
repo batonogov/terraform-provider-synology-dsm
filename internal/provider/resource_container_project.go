@@ -48,15 +48,15 @@ func (r *containerProjectResource) Schema(_ context.Context, _ resource.SchemaRe
 		Description: "Creates and manages a Docker Compose project in Synology Container Manager. " +
 			"Destroy leaves the project and its workloads intact unless `delete_on_destroy` is explicitly enabled.\n\n" +
 			"Two things about bind mounts are worth knowing before writing the compose file, because neither " +
-			"fails in a way that points at the cause:\n\n" +
-			"* **Every Synology shared folder contains an `@eaDir` metadata directory.** Bind-mounting a share " +
-			"root at a path a service expects to find empty therefore fails — PostgreSQL's `initdb` reports " +
-			"\"directory exists but is not empty\". Mount a subdirectory of the share instead.\n" +
-			"* **A bind mount enforces POSIX mode bits, not the Synology ACL.** A shared folder created through " +
-			"DSM normally has mode `000` with its real rules in the ACL, which DSM and SMB honour and Docker " +
-			"does not — so a container running as anything but root cannot read or write it. `dsm_shared_folder` " +
-			"and `dsm_file` report the mode in `posix_mode`, but no DSM API can change it; that needs a `chmod` " +
-			"on the NAS.",
+			"fails in a way that points at the cause.\n\n" +
+			"Every Synology shared folder contains an `@eaDir` metadata directory, so bind-mounting a share " +
+			"root at a path a service expects to find empty fails — PostgreSQL's `initdb` reports \"directory " +
+			"exists but is not empty\". Mount a subdirectory of the share instead.\n\n" +
+			"A bind mount also enforces POSIX mode bits rather than the Synology ACL. A shared folder created " +
+			"through DSM normally has mode `000` with its real rules in the ACL, which DSM and SMB honour and " +
+			"Docker does not — so a container running as anything but root cannot read or write it. " +
+			"`dsm_shared_folder` and `dsm_file` report the mode in `posix_mode`, but no DSM API can change it; " +
+			"that needs a `chmod` on the NAS.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
