@@ -4,11 +4,14 @@ page_title: "dsm_file Resource - terraform-provider-synology-dsm"
 subcategory: ""
 description: |-
   Uploads a file into a Synology shared folder through File Station. Intended for configuration files that a container project or a service reads from disk, so that secrets no longer have to be smuggled through Docker Compose YAML.
+  The POSIX mode and ownership the file lands with are reported in posix_mode, posix_owner, posix_uid and friends, but cannot be set: DSM exposes no API that writes them. On a shared folder in Synology ACL mode the mode is typically "000", which is invisible to DSM itself and to SMB but denies every container that bind-mounts the path and does not run as root. Fixing it needs a chmod on the NAS — over SSH, or through a dsm_scheduled_task running as root if that is to stay in the configuration.
 ---
 
 # dsm_file (Resource)
 
 Uploads a file into a Synology shared folder through File Station. Intended for configuration files that a container project or a service reads from disk, so that secrets no longer have to be smuggled through Docker Compose YAML.
+
+The POSIX mode and ownership the file lands with are reported in `posix_mode`, `posix_owner`, `posix_uid` and friends, but cannot be set: DSM exposes no API that writes them. On a shared folder in Synology ACL mode the mode is typically `"000"`, which is invisible to DSM itself and to SMB but denies every container that bind-mounts the path and does not run as root. Fixing it needs a `chmod` on the NAS — over SSH, or through a `dsm_scheduled_task` running as root if that is to stay in the configuration.
 
 ## Example Usage
 
@@ -72,8 +75,14 @@ resource "dsm_file" "keystore" {
 
 ### Read-Only
 
+- `acl_mode` (Boolean) Whether the path takes its access rules from a Synology ACL rather than from POSIX mode bits. When true, `posix_mode` is usually `"000"` and says nothing about who may actually read the path through DSM — but it is exactly what a Docker bind mount enforces. Read-only.
 - `checksum` (String) SHA-256 checksum (hex) of the file content stored on DSM. Changes when the file is edited outside Terraform.
 - `id` (String) Absolute File Station path of the file, for example `/containers/seaweedfs/conf/s3.json`.
+- `posix_gid` (Number) Numeric group id of the path on disk. Read-only.
+- `posix_group` (String) Name of the POSIX group of the path on disk. Read-only.
+- `posix_mode` (String) POSIX mode of the path on disk, as DSM reports it — the digits are octal, so `"755"` is `rwxr-xr-x` and `"000"` means no POSIX access at all. **Read-only:** no DSM API writes POSIX bits, so this provider can show the mode but not set it. `"000"` together with `acl_mode = true` is DSM's normal state for a folder whose access rules live in a Synology ACL; it breaks anything that consults POSIX bits instead, notably Docker bind mounts. Null when File Station is unavailable or does not report the path.
+- `posix_owner` (String) Name of the POSIX owner of the path on disk. Read-only.
+- `posix_uid` (Number) Numeric owner id of the path on disk. Read-only; useful for matching the uid a container runs as.
 - `size` (Number) Size of the file on DSM, in bytes.
 
 ## Import

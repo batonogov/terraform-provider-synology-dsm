@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"unicode/utf8"
 
@@ -41,6 +42,7 @@ type sharedFolderResourceModel struct {
 	ShareQuota          types.Int64  `tfsdk:"share_quota"`
 	UUID                types.String `tfsdk:"uuid"`
 	AdoptExisting       types.Bool   `tfsdk:"adopt_existing"`
+	posixPermissionsModel
 }
 
 func (r *sharedFolderResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -49,7 +51,13 @@ func (r *sharedFolderResource) Metadata(_ context.Context, req resource.Metadata
 
 func (r *sharedFolderResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a shared folder on Synology DSM.",
+		Description: "Manages a shared folder on Synology DSM.\n\n" +
+			"The POSIX mode the folder lands on disk with is reported in `posix_mode` but cannot be set: DSM " +
+			"exposes no API that writes POSIX bits or ownership. A new shared folder normally comes up in " +
+			"Synology ACL mode with `posix_mode = \"000\"`, which DSM, SMB and File Station all honour through " +
+			"the ACL — but a Docker bind mount does not, so a container that is not running as root cannot read " +
+			"or write the folder. Correcting that needs a `chmod` on the NAS, over SSH or through a " +
+			"`dsm_scheduled_task` running as root.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -152,6 +160,7 @@ func (r *sharedFolderResource) Schema(_ context.Context, _ resource.SchemaReques
 			},
 		},
 	}
+	maps.Copy(resp.Schema.Attributes, posixPermissionAttributes())
 }
 
 func (r *sharedFolderResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -193,8 +202,18 @@ func (r *sharedFolderResource) Create(ctx context.Context, req resource.CreateRe
 	}
 
 	applyShareToPlan(&plan, share)
+	plan.apply(readSharePermissions(ctx, r.client, share.Name))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+// readSharePermissions reads the on-disk permissions of a shared folder root.
+//
+// The share APIs report nothing about them, so this goes through File Station,
+// where a shared folder is addressed by its bare name: "/containers", never
+// "/volume1/containers".
+func readSharePermissions(ctx context.Context, c *client.Client, name string) *client.PathPermissions {
+	return readPathPermissions(ctx, c, "/"+name)
 }
 
 // shareAlreadyExistsCode is DSM's answer when a share of that name is already
@@ -414,6 +433,7 @@ func (r *sharedFolderResource) Read(ctx context.Context, req resource.ReadReques
 	state.Description = nullableString(share.Description)
 	state.VolPath = types.StringValue(share.VolPath)
 	applyShareToPlan(&state, share)
+	state.apply(readSharePermissions(ctx, r.client, share.Name))
 
 	// adopt_existing steers this provider's behaviour at create time and has no
 	// counterpart in DSM, so it is carried over from prior state. After an import
@@ -456,6 +476,7 @@ func (r *sharedFolderResource) Update(ctx context.Context, req resource.UpdateRe
 	}
 
 	applyShareToPlan(&plan, share)
+	plan.apply(readSharePermissions(ctx, r.client, share.Name))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }

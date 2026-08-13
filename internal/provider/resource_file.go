@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	pathpkg "path"
 	"strings"
 	"unicode/utf8"
@@ -37,6 +38,7 @@ type fileResourceModel struct {
 	ContentBase64 types.String `tfsdk:"content_base64"`
 	Checksum      types.String `tfsdk:"checksum"`
 	Size          types.Int64  `tfsdk:"size"`
+	posixPermissionsModel
 }
 
 func (r *fileResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -47,7 +49,13 @@ func (r *fileResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 	resp.Schema = schema.Schema{
 		Description: "Uploads a file into a Synology shared folder through File Station. " +
 			"Intended for configuration files that a container project or a service reads from disk, " +
-			"so that secrets no longer have to be smuggled through Docker Compose YAML.",
+			"so that secrets no longer have to be smuggled through Docker Compose YAML.\n\n" +
+			"The POSIX mode and ownership the file lands with are reported in `posix_mode`, `posix_owner`, " +
+			"`posix_uid` and friends, but cannot be set: DSM exposes no API that writes them. On a shared " +
+			"folder in Synology ACL mode the mode is typically `\"000\"`, which is invisible to DSM itself " +
+			"and to SMB but denies every container that bind-mounts the path and does not run as root. " +
+			"Fixing it needs a `chmod` on the NAS — over SSH, or through a `dsm_scheduled_task` running as " +
+			"root if that is to stay in the configuration.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -94,6 +102,7 @@ func (r *fileResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 		},
 	}
+	maps.Copy(resp.Schema.Attributes, posixPermissionAttributes())
 }
 
 func (r *fileResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
@@ -196,6 +205,10 @@ func (r *fileResource) Create(ctx context.Context, req resource.CreateRequest, r
 	plan.ID = types.StringValue(filePath)
 	plan.Checksum = types.StringValue(fileChecksum(content))
 	plan.Size = types.Int64Value(int64(len(content)))
+	// Read back rather than left unknown: a computed attribute must be resolved
+	// by the end of apply, and the whole point of these is to show what DSM
+	// actually did with the file.
+	plan.apply(readPathPermissions(ctx, r.client, filePath))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -252,6 +265,7 @@ func (r *fileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	applyFileContent(&state, content)
 	state.Checksum = types.StringValue(fileChecksum(content))
 	state.Size = types.Int64Value(int64(len(content)))
+	state.apply(info.Permissions)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
@@ -280,6 +294,7 @@ func (r *fileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	plan.ID = types.StringValue(filePath)
 	plan.Checksum = types.StringValue(fileChecksum(content))
 	plan.Size = types.Int64Value(int64(len(content)))
+	plan.apply(readPathPermissions(ctx, r.client, filePath))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }

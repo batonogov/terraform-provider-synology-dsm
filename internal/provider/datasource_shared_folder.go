@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"maps"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -30,6 +31,7 @@ type sharedFolderDataSourceModel struct {
 	EnableShareCow      types.Bool   `tfsdk:"enable_share_cow"`
 	ShareQuota          types.Int64  `tfsdk:"share_quota"`
 	UUID                types.String `tfsdk:"uuid"`
+	posixPermissionsModel
 }
 
 func (d *sharedFolderDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -38,7 +40,9 @@ func (d *sharedFolderDataSource) Metadata(_ context.Context, req datasource.Meta
 
 func (d *sharedFolderDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Read-only data source for looking up an existing DSM shared folder.",
+		Description: "Read-only data source for looking up an existing DSM shared folder, including the POSIX " +
+			"mode and ownership it has on disk — which is what a Docker bind mount of the folder enforces, and " +
+			"which DSM offers no API to change.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -87,6 +91,7 @@ func (d *sharedFolderDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 			},
 		},
 	}
+	maps.Copy(resp.Schema.Attributes, posixPermissionDataSourceAttributes())
 }
 
 func (d *sharedFolderDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
@@ -132,6 +137,7 @@ func (d *sharedFolderDataSource) Read(ctx context.Context, req datasource.ReadRe
 	config.EnableShareCow = types.BoolValue(share.EnableShareCow)
 	config.ShareQuota = types.Int64Value(share.ShareQuota)
 	config.UUID = types.StringValue(share.UUID)
+	config.apply(readSharePermissions(ctx, d.client, share.Name))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }

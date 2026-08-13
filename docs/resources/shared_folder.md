@@ -4,11 +4,14 @@ page_title: "dsm_shared_folder Resource - terraform-provider-synology-dsm"
 subcategory: ""
 description: |-
   Manages a shared folder on Synology DSM.
+  The POSIX mode the folder lands on disk with is reported in posix_mode but cannot be set: DSM exposes no API that writes POSIX bits or ownership. A new shared folder normally comes up in Synology ACL mode with posix_mode = "000", which DSM, SMB and File Station all honour through the ACL — but a Docker bind mount does not, so a container that is not running as root cannot read or write the folder. Correcting that needs a chmod on the NAS, over SSH or through a dsm_scheduled_task running as root.
 ---
 
 # dsm_shared_folder (Resource)
 
 Manages a shared folder on Synology DSM.
+
+The POSIX mode the folder lands on disk with is reported in `posix_mode` but cannot be set: DSM exposes no API that writes POSIX bits or ownership. A new shared folder normally comes up in Synology ACL mode with `posix_mode = "000"`, which DSM, SMB and File Station all honour through the ACL — but a Docker bind mount does not, so a container that is not running as root cannot read or write the folder. Correcting that needs a `chmod` on the NAS, over SSH or through a `dsm_scheduled_task` running as root.
 
 ## Example Usage
 
@@ -60,7 +63,13 @@ resource "dsm_shared_folder" "docker" {
 
 ### Read-Only
 
+- `acl_mode` (Boolean) Whether the path takes its access rules from a Synology ACL rather than from POSIX mode bits. When true, `posix_mode` is usually `"000"` and says nothing about who may actually read the path through DSM — but it is exactly what a Docker bind mount enforces. Read-only.
 - `id` (String) Unique identifier for the shared folder (name).
+- `posix_gid` (Number) Numeric group id of the path on disk. Read-only.
+- `posix_group` (String) Name of the POSIX group of the path on disk. Read-only.
+- `posix_mode` (String) POSIX mode of the path on disk, as DSM reports it — the digits are octal, so `"755"` is `rwxr-xr-x` and `"000"` means no POSIX access at all. **Read-only:** no DSM API writes POSIX bits, so this provider can show the mode but not set it. `"000"` together with `acl_mode = true` is DSM's normal state for a folder whose access rules live in a Synology ACL; it breaks anything that consults POSIX bits instead, notably Docker bind mounts. Null when File Station is unavailable or does not report the path.
+- `posix_owner` (String) Name of the POSIX owner of the path on disk. Read-only.
+- `posix_uid` (Number) Numeric owner id of the path on disk. Read-only; useful for matching the uid a container runs as.
 - `uuid` (String) UUID assigned by DSM.
 
 ## Import

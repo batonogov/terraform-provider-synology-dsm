@@ -224,6 +224,89 @@ func TestClient_GetFileInfo_ParsesEntry(t *testing.T) {
 	}
 }
 
+// TestClient_GetFileInfo_ReadsPermissions pins the ownership and mode block.
+// DSM only returns it when perm and owner are named in additional, so the
+// request is asserted too: dropping either from the list would silently turn
+// every posix attribute null instead of failing.
+func TestClient_GetFileInfo_ReadsPermissions(t *testing.T) {
+	client, _ := newFileTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		additional := r.URL.Query().Get("additional")
+		for _, field := range []string{"perm", "owner"} {
+			if !strings.Contains(additional, `"`+field+`"`) {
+				t.Errorf("additional = %q, want it to request %q", additional, field)
+			}
+		}
+		writeFileAPIResponse(w, map[string]interface{}{"files": []map[string]interface{}{{
+			"path": "/containers", "name": "containers", "isdir": true,
+			"additional": map[string]interface{}{
+				"perm":  map[string]interface{}{"posix": 0, "is_acl_mode": true},
+				"owner": map[string]interface{}{"user": "root", "group": "root", "uid": 0, "gid": 0},
+			},
+		}}})
+	})
+
+	permissions, err := client.GetPathPermissions(context.Background(), "/containers")
+	if err != nil {
+		t.Fatalf("GetPathPermissions failed: %v", err)
+	}
+	if permissions == nil {
+		t.Fatal("expected permissions, got nil")
+	}
+	// Mode 0 with an ACL is the shape reported in issue #94: DSM is happy, a
+	// Docker bind mount is not.
+	if permissions.PosixMode != 0 || !permissions.IsACLMode {
+		t.Errorf("PosixMode = %d, IsACLMode = %v; want 0 and true", permissions.PosixMode, permissions.IsACLMode)
+	}
+	if permissions.Owner != "root" || permissions.Group != "root" || permissions.UID != 0 || permissions.GID != 0 {
+		t.Errorf("unexpected ownership: %+v", permissions)
+	}
+}
+
+// TestClient_GetFileInfo_PermissionsAbsent keeps "DSM did not report it"
+// distinguishable from "mode 000 owned by root": a zero-valued struct would
+// claim the path has no POSIX access at all.
+func TestClient_GetFileInfo_PermissionsAbsent(t *testing.T) {
+	client, _ := newFileTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeFileAPIResponse(w, map[string]interface{}{"files": []map[string]interface{}{{
+			"path": "/containers/conf/s3.json", "name": "s3.json", "isdir": false,
+			"additional": map[string]interface{}{"size": 42},
+		}}})
+	})
+
+	permissions, err := client.GetPathPermissions(context.Background(), "/containers/conf/s3.json")
+	if err != nil {
+		t.Fatalf("GetPathPermissions failed: %v", err)
+	}
+	if permissions != nil {
+		t.Errorf("expected nil permissions, got %+v", permissions)
+	}
+}
+
+// TestClient_GetFileInfo_PosixModeIsOctalDigits records the encoding: DSM
+// prints the octal digits as a decimal number, so 755 means rwxr-xr-x and must
+// not be read as a bitmask.
+func TestClient_GetFileInfo_PosixModeIsOctalDigits(t *testing.T) {
+	client, _ := newFileTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeFileAPIResponse(w, map[string]interface{}{"files": []map[string]interface{}{{
+			"path": "/containers", "name": "containers", "isdir": true,
+			"additional": map[string]interface{}{
+				"perm": map[string]interface{}{"posix": 755, "is_acl_mode": false},
+			},
+		}}})
+	})
+
+	permissions, err := client.GetPathPermissions(context.Background(), "/containers")
+	if err != nil {
+		t.Fatalf("GetPathPermissions failed: %v", err)
+	}
+	if permissions.PosixMode != 755 {
+		t.Errorf("PosixMode = %d, want 755 as DSM printed it", permissions.PosixMode)
+	}
+	if permissions.Owner != "" || permissions.UID != 0 {
+		t.Errorf("owner should stay empty when DSM omits the block: %+v", permissions)
+	}
+}
+
 // TestClient_GetFileInfo_NotFound covers both shapes DSM uses for a missing
 // path: a failed envelope, and a successful envelope whose entry carries the
 // per-file code instead.
