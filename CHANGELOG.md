@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.4.0...v0.5.0) (2026-08-14)
+
+
+### Features
+
+* dsm_certificate_service — bind certificates to individual DSM services ([#108](https://github.com/batonogov/terraform-provider-synology-dsm/issues/108)) ([#115](https://github.com/batonogov/terraform-provider-synology-dsm/issues/115)) ([83284e9](https://github.com/batonogov/terraform-provider-synology-dsm/commit/83284e9067983bc0bc9681cf6659d080f07c17c8))
+* dsm_firewall_rules data source — whole-profile audit in one read ([#109](https://github.com/batonogov/terraform-provider-synology-dsm/issues/109)) ([#113](https://github.com/batonogov/terraform-provider-synology-dsm/issues/113)) ([54897c0](https://github.com/batonogov/terraform-provider-synology-dsm/commit/54897c0ed0ac529d017a5c12f5f8da686aa9b6a5))
+* dsm_notification_mail — manage the outgoing SMTP transport ([#111](https://github.com/batonogov/terraform-provider-synology-dsm/issues/111)) ([#116](https://github.com/batonogov/terraform-provider-synology-dsm/issues/116)) ([1b9aa2d](https://github.com/batonogov/terraform-provider-synology-dsm/commit/1b9aa2ddd4c14fb694d5d02395196e2b5b999e1d))
+* ldap_user/ldap_group principals in dsm_share_permission ([#110](https://github.com/batonogov/terraform-provider-synology-dsm/issues/110)) ([#117](https://github.com/batonogov/terraform-provider-synology-dsm/issues/117)) ([d09434d](https://github.com/batonogov/terraform-provider-synology-dsm/commit/d09434dffec1c0608214e096d9d853d0cfea8bef))
+
 ## [0.4.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.3.1...v0.4.0) (2026-08-14)
 
 
