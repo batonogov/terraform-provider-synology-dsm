@@ -27,7 +27,8 @@ data "dsm_container_project" "object_storage" {
 
 ### Read-Only
 
-- `compose_yaml` (String, Sensitive) Docker Compose YAML stored by Container Manager.
+- `compose_yaml` (String, Sensitive) Docker Compose YAML stored by Container Manager. Reading it puts the document — credentials and all — into the state of the configuration that declares this data source, which defeats `compose_yaml_wo` on the resource side. Use `compose_yaml_checksum` when all that is needed is to notice the document changing.
+- `compose_yaml_checksum` (String) SHA-256 checksum (hex) of the compose document, for observing changes without reading the document itself.
 - `container_ids` (List of String) Container identifiers associated with the project.
 - `id` (String) Project UUID assigned by Container Manager.
 - `path` (String) Absolute volume path of the project directory.
