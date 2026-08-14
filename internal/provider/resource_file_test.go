@@ -558,6 +558,77 @@ func TestFileResource_Create_WriteOnlyContentStaysOutOfState(t *testing.T) {
 	}
 }
 
+// TestFileResource_Update_WriteOnlyContentStaysOutOfState covers the second
+// write path: Update reads the configuration for the same reason Create does,
+// and a copy-paste that reached for the plan there would upload nothing.
+func TestFileResource_Update_WriteOnlyContentStaysOutOfState(t *testing.T) {
+	const rotated = `{"secretKey":"rotated"}`
+	var uploaded string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("api") {
+		case "SYNO.FileStation.Upload":
+			body, _ := io.ReadAll(r.Body)
+			uploaded = string(body)
+			_, _ = w.Write([]byte(`{"success":true,"data":{}}`))
+		case "SYNO.FileStation.List":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"files":[{"path":"/containers/conf/s3.json","name":"s3.json","isdir":false}]}}`))
+		default:
+			t.Errorf("unexpected API call: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	sch := fileResourceSchema(t)
+	state := fileObject(t, sch, map[string]tftypes.Value{
+		"id":                 tfString("/containers/conf/s3.json"),
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 1),
+		"checksum":           tfString(sha256Hex("previous")),
+	})
+	plan := fileObject(t, sch, map[string]tftypes.Value{
+		"id":                 tfString("/containers/conf/s3.json"),
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 2),
+	})
+	config := fileObject(t, sch, map[string]tftypes.Value{
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo":         tfString(rotated),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 2),
+	})
+
+	r := &fileResource{client: client.NewClient(server.URL, "admin", "", false)}
+	resp := &resource.UpdateResponse{State: tfsdk.State{Schema: sch, Raw: state}}
+	r.Update(t.Context(), resource.UpdateRequest{
+		State:  tfsdk.State{Schema: sch, Raw: state},
+		Plan:   tfsdk.Plan{Schema: sch, Raw: plan},
+		Config: tfsdk.Config{Schema: sch, Raw: config},
+	}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Update returned errors: %v", resp.Diagnostics)
+	}
+
+	if !strings.Contains(uploaded, rotated) {
+		t.Fatal("the rotated write-only value must be read from the configuration and uploaded")
+	}
+
+	var model fileResourceModel
+	if diags := resp.State.Get(t.Context(), &model); diags.HasError() {
+		t.Fatalf("reading state failed: %v", diags)
+	}
+	if !model.Content.IsNull() || !model.ContentBase64.IsNull() || !model.ContentWO.IsNull() {
+		t.Errorf("no form of the content may reach state, got %+v", model)
+	}
+	if model.Checksum.ValueString() != sha256Hex(rotated) {
+		t.Errorf("checksum = %q, want the checksum of the rotated content", model.Checksum.ValueString())
+	}
+	if model.ContentWOVersion.ValueInt64() != 2 {
+		t.Errorf("content_wo_version = %d, want the planned 2", model.ContentWOVersion.ValueInt64())
+	}
+}
+
 // TestFileResource_Read_KeepsWriteOnlyContentOutOfState covers the refresh side:
 // the file is downloaded for its checksum, and the bytes are then dropped.
 func TestFileResource_Read_KeepsWriteOnlyContentOutOfState(t *testing.T) {
