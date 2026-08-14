@@ -29,7 +29,7 @@ resource "dsm_share_permission" "developers" {
 - `permission` (String) Permission level: read_only, read_write, or no_access.
 - `principal_name` (String) User or group name.
 - `share_name` (String) Name of the shared folder.
-- `user_group_type` (String) Type of principal: local_user or local_group.
+- `user_group_type` (String) Type of principal: local_user, local_group, ldap_user, or ldap_group. The ldap_* types address domain principals on a NAS joined to LDAP or Active Directory; the principal name is the account name as the directory reports it.
 
 ### Read-Only
 

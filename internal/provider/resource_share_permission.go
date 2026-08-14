@@ -56,12 +56,12 @@ func (r *sharePermissionResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 			"user_group_type": schema.StringAttribute{
 				Required:    true,
-				Description: "Type of principal: local_user or local_group.",
+				Description: "Type of principal: local_user, local_group, ldap_user, or ldap_group. The ldap_* types address domain principals on a NAS joined to LDAP or Active Directory; the principal name is the account name as the directory reports it.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
-					newStringOneOfValidator("local_user", "local_group"),
+					newStringOneOfValidator("local_user", "local_group", "ldap_user", "ldap_group"),
 				},
 			},
 			"principal_name": schema.StringAttribute{
