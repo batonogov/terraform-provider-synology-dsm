@@ -583,3 +583,87 @@ func flexibleStringValue(object map[string]interface{}, key string) string {
 
 // jsonQuoted lives in event_scheduler.go — the certificate set method wants its
 // id and desc in exactly the same JSON-quoted form.
+
+// certificateServiceAPI binds certificates to individual DSM services.
+// Reconstructed from the python synology-api client's set_certificate_for_service,
+// which is in production use against DSM 7: the call takes a JSON array named
+// "settings", one entry per binding change, each carrying the full service
+// object exactly as the certificate list returned it, plus the certificate ids
+// to move it from (old_id) and to (id). Sending a hand-built service object is
+// rejected — DSM wants its own shape back.
+const certificateServiceAPI = "SYNO.Core.Certificate.Service"
+
+// ErrCertificateServiceNotFound reports that no installed certificate is
+// currently serving the named service, so the binding resource can treat it as
+// "not bound yet" rather than an error.
+var ErrCertificateServiceNotFound = errors.New("DSM certificate service binding not found")
+
+// CertificateServiceBinding is the certificate currently serving a service.
+type CertificateServiceBinding struct {
+	// CertificateID is the DSM certificate id bound to the service.
+	CertificateID string
+	// Service is the raw service object exactly as DSM returned it inside the
+	// certificate list. Writes must send this object back unchanged.
+	Service map[string]interface{}
+}
+
+// FindCertificateServiceBinding looks through every installed certificate for
+// the service with the given internal identifier (the "service" field, e.g.
+// "default" for the DSM web UI or "synology.at.caddy" for a reverse-proxy
+// entry). Returns the owning certificate id and the raw service object.
+func (c *Client) FindCertificateServiceBinding(ctx context.Context, serviceID string) (*CertificateServiceBinding, error) {
+	body, err := c.DoAPI(ctx, certificateAPI, "1", "list", url.Values{})
+	if err != nil {
+		return nil, fmt.Errorf("list certificates: %w", err)
+	}
+
+	var result struct {
+		Certificates []struct {
+			ID       string                   `json:"id"`
+			Services []map[string]interface{} `json:"services"`
+		} `json:"certificates"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode certificate list: %w", err)
+	}
+
+	for _, certificate := range result.Certificates {
+		for _, service := range certificate.Services {
+			if stringValue(service, "service") == serviceID {
+				return &CertificateServiceBinding{
+					CertificateID: certificate.ID,
+					Service:       service,
+				}, nil
+			}
+		}
+	}
+	return nil, ErrCertificateServiceNotFound
+}
+
+// SetCertificateService binds a service to a certificate.
+//
+// DSM takes the full service object (as returned by the certificate list) plus
+// the previous owner's id in old_id — omitting a service object it recognizes,
+// or sending one rebuilt by hand, is rejected. A binding change also restarts
+// the affected service, so this is not a cheap call.
+func (c *Client) SetCertificateService(ctx context.Context, service map[string]interface{}, oldCertificateID, newCertificateID string) error {
+	settings := []map[string]interface{}{
+		{
+			"service": service,
+			"old_id":  oldCertificateID,
+			"id":      newCertificateID,
+		},
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("encode service settings: %w", err)
+	}
+
+	params := url.Values{}
+	params.Set("settings", string(encoded))
+
+	if _, err := c.DoAPIPost(ctx, certificateServiceAPI, "1", "set", params); err != nil {
+		return fmt.Errorf("bind certificate %q to service: %w", newCertificateID, err)
+	}
+	return nil
+}
