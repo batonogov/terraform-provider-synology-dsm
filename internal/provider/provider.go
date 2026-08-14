@@ -213,6 +213,7 @@ func (p *synologyProvider) DataSources(_ context.Context) []func() datasource.Da
 		NewSystemSettingsDataSource,
 		NewReverseProxyDataSource,
 		NewFirewallRuleDataSource,
+		NewFirewallRulesDataSource,
 		NewScheduledTaskDataSource,
 		NewEventTaskDataSource,
 		NewCertificatesDataSource,
