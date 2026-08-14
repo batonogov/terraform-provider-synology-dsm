@@ -1,0 +1,1 @@
+terraform import dsm_notification_mail.this notification_mail

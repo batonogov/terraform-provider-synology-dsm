@@ -195,6 +195,7 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 		NewFirewallRuleResource,
 		NewScheduledTaskResource,
 		NewEventTaskResource,
+		NewNotificationMailResource,
 		NewCertificateResource,
 		NewCertificateLetsEncryptResource,
 		NewCertificateServiceResource,
