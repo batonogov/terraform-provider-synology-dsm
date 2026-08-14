@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,15 +64,30 @@ func TestFileResource_Schema(t *testing.T) {
 			t.Errorf("%s must be required", name)
 		}
 	}
-	for _, name := range []string{"content", "content_base64"} {
+	for _, name := range []string{"content", "content_base64", "content_wo", "content_base64_wo"} {
 		attr := attrs[name]
 		if attr == nil || !attr.IsOptional() {
-			t.Errorf("%s must be optional: content and content_base64 are alternatives", name)
+			t.Errorf("%s must be optional: the four content attributes are alternatives", name)
 			continue
 		}
 		if !attr.IsSensitive() {
 			t.Errorf("%s must be sensitive: files carry credentials", name)
 		}
+	}
+	// The write-only pair is what keeps a secret out of state; a lost WriteOnly
+	// flag would silently start persisting it.
+	for _, name := range []string{"content_wo", "content_base64_wo"} {
+		attr := attrs[name]
+		if attr == nil || !attr.IsWriteOnly() {
+			t.Errorf("%s must be write-only", name)
+			continue
+		}
+		if attr.IsComputed() {
+			t.Errorf("%s must not be computed: Terraform cannot compute a value it never stores", name)
+		}
+	}
+	if attr := attrs["content_wo_version"]; attr == nil || !attr.IsOptional() || attr.IsWriteOnly() {
+		t.Error("content_wo_version must be an optional, non-write-only counter — it is the marker that survives in state")
 	}
 	for _, name := range []string{"id", "checksum", "size"} {
 		if attr := attrs[name]; attr == nil || !attr.IsComputed() {
@@ -124,6 +140,39 @@ func TestFileResource_ValidateConfig(t *testing.T) {
 		{
 			name:      "both content forms",
 			values:    map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("s3.json"), "content": tfString("{}"), "content_base64": tfString("aGVsbG8=")},
+			wantError: true,
+		},
+		{
+			name: "write-only content with version",
+			values: map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("s3.json"),
+				"content_wo": tfString("{}"), "content_wo_version": tftypes.NewValue(tftypes.Number, 1)},
+		},
+		{
+			name: "write-only base64 content with version",
+			values: map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("cert.p12"),
+				"content_base64_wo": tfString("aGVsbG8="), "content_wo_version": tftypes.NewValue(tftypes.Number, 1)},
+		},
+		{
+			name:      "write-only content without version",
+			values:    map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("s3.json"), "content_wo": tfString("{}")},
+			wantError: true,
+		},
+		{
+			name: "version without write-only content",
+			values: map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("s3.json"),
+				"content": tfString("{}"), "content_wo_version": tftypes.NewValue(tftypes.Number, 1)},
+			wantError: true,
+		},
+		{
+			name: "plain and write-only content together",
+			values: map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("s3.json"),
+				"content": tfString("{}"), "content_wo": tfString("{}"), "content_wo_version": tftypes.NewValue(tftypes.Number, 1)},
+			wantError: true,
+		},
+		{
+			name: "invalid write-only base64",
+			values: map[string]tftypes.Value{"share_path": tfString("/containers/conf"), "name": tfString("cert.p12"),
+				"content_base64_wo": tfString("not base64!"), "content_wo_version": tftypes.NewValue(tftypes.Number, 1)},
 			wantError: true,
 		},
 		{
@@ -401,23 +450,32 @@ func TestFileResource_Read_RefusesDirectory(t *testing.T) {
 }
 
 func TestFileContentBytes(t *testing.T) {
+	null := types.StringNull()
 	tests := []struct {
-		name          string
-		content       types.String
-		contentBase64 types.String
-		want          []byte
-		wantError     bool
+		name            string
+		content         types.String
+		contentBase64   types.String
+		contentWO       types.String
+		contentBase64WO types.String
+		want            []byte
+		wantError       bool
 	}{
-		{name: "text", content: types.StringValue("hello"), contentBase64: types.StringNull(), want: []byte("hello")},
-		{name: "base64", content: types.StringNull(), contentBase64: types.StringValue("AAH/"), want: []byte{0x00, 0x01, 0xff}},
-		{name: "empty file is valid", content: types.StringValue(""), contentBase64: types.StringNull(), want: []byte{}},
-		{name: "invalid base64", content: types.StringNull(), contentBase64: types.StringValue("!!"), wantError: true},
-		{name: "nothing set", content: types.StringNull(), contentBase64: types.StringNull(), wantError: true},
+		{name: "text", content: types.StringValue("hello"), contentBase64: null, contentWO: null, contentBase64WO: null, want: []byte("hello")},
+		{name: "base64", content: null, contentBase64: types.StringValue("AAH/"), contentWO: null, contentBase64WO: null, want: []byte{0x00, 0x01, 0xff}},
+		{name: "empty file is valid", content: types.StringValue(""), contentBase64: null, contentWO: null, contentBase64WO: null, want: []byte{}},
+		{name: "write-only text", content: null, contentBase64: null, contentWO: types.StringValue("s3cr3t"), contentBase64WO: null, want: []byte("s3cr3t")},
+		{name: "write-only base64", content: null, contentBase64: null, contentWO: null, contentBase64WO: types.StringValue("AAH/"), want: []byte{0x00, 0x01, 0xff}},
+		{name: "invalid base64", content: null, contentBase64: types.StringValue("!!"), contentWO: null, contentBase64WO: null, wantError: true},
+		{name: "invalid write-only base64", content: null, contentBase64: null, contentWO: null, contentBase64WO: types.StringValue("!!"), wantError: true},
+		{name: "nothing set", content: null, contentBase64: null, contentWO: null, contentBase64WO: null, wantError: true},
+		// A write-only value reaches the provider only during apply. If it did not
+		// arrive, uploading the empty string would silently truncate the file.
+		{name: "unknown write-only value is not content", content: null, contentBase64: null, contentWO: types.StringUnknown(), contentBase64WO: null, wantError: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := fileContentBytes(tt.content, tt.contentBase64)
+			got, err := fileContentBytes(tt.content, tt.contentBase64, tt.contentWO, tt.contentBase64WO)
 			if tt.wantError {
 				if err == nil {
 					t.Fatalf("expected an error, got %q", got)
@@ -431,6 +489,230 @@ func TestFileContentBytes(t *testing.T) {
 				t.Errorf("bytes = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFileResource_Create_WriteOnlyContentStaysOutOfState is the whole point of
+// issue #104: the secret reaches DSM, and state keeps nothing but its checksum.
+func TestFileResource_Create_WriteOnlyContentStaysOutOfState(t *testing.T) {
+	const secret = `{"secretKey":"s3cr3t"}`
+	var uploaded string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("api") {
+		case "SYNO.FileStation.Upload":
+			body, _ := io.ReadAll(r.Body)
+			uploaded = string(body)
+			_, _ = w.Write([]byte(`{"success":true,"data":{}}`))
+		case "SYNO.FileStation.List":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"files":[{"path":"/containers/conf/s3.json","name":"s3.json","isdir":false}]}}`))
+		default:
+			t.Errorf("unexpected API call: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	sch := fileResourceSchema(t)
+	// The plan is what Terraform hands a provider during apply: write-only
+	// attributes are null in it, and only the configuration carries the value.
+	plan := fileObject(t, sch, map[string]tftypes.Value{
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 1),
+	})
+	config := fileObject(t, sch, map[string]tftypes.Value{
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo":         tfString(secret),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 1),
+	})
+
+	r := &fileResource{client: client.NewClient(server.URL, "admin", "", false)}
+	resp := &resource.CreateResponse{State: tfsdk.State{Schema: sch, Raw: plan}}
+	r.Create(t.Context(), resource.CreateRequest{
+		Plan:   tfsdk.Plan{Schema: sch, Raw: plan},
+		Config: tfsdk.Config{Schema: sch, Raw: config},
+	}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Create returned errors: %v", resp.Diagnostics)
+	}
+
+	if !strings.Contains(uploaded, secret) {
+		t.Fatal("the write-only value must be read from the configuration and uploaded")
+	}
+
+	var model fileResourceModel
+	if diags := resp.State.Get(t.Context(), &model); diags.HasError() {
+		t.Fatalf("reading state failed: %v", diags)
+	}
+	if !model.Content.IsNull() || !model.ContentBase64.IsNull() || !model.ContentWO.IsNull() {
+		t.Errorf("no form of the content may reach state, got %+v", model)
+	}
+	if model.Checksum.ValueString() != sha256Hex(secret) {
+		t.Errorf("checksum = %q, want the checksum of the uploaded content", model.Checksum.ValueString())
+	}
+	if model.Size.ValueInt64() != int64(len(secret)) {
+		t.Errorf("size = %d, want %d", model.Size.ValueInt64(), len(secret))
+	}
+	if model.ContentWOVersion.ValueInt64() != 1 {
+		t.Errorf("content_wo_version = %d, want the configured 1 — it is the marker Read keys off", model.ContentWOVersion.ValueInt64())
+	}
+}
+
+// TestFileResource_Read_KeepsWriteOnlyContentOutOfState covers the refresh side:
+// the file is downloaded for its checksum, and the bytes are then dropped.
+func TestFileResource_Read_KeepsWriteOnlyContentOutOfState(t *testing.T) {
+	const remote = "{\"secretKey\":\"rotated\"}\n"
+	server := fileReadServer(t, "/containers/conf/s3.json", []byte(remote), false)
+
+	model, _ := readFileResource(t, server, map[string]tftypes.Value{
+		"id":                 tfString("/containers/conf/s3.json"),
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 1),
+		"checksum":           tfString(sha256Hex("previous")),
+	})
+
+	if !model.Content.IsNull() || !model.ContentBase64.IsNull() {
+		t.Errorf("refresh must not persist the content of a write-only file, got %+v", model)
+	}
+	if model.Checksum.ValueString() != sha256Hex(remote) {
+		t.Errorf("checksum = %q, want the checksum of what DSM stores — that is the drift signal", model.Checksum.ValueString())
+	}
+}
+
+func TestFileContentWillChange(t *testing.T) {
+	writeOnlyState := fileResourceModel{
+		ContentWOVersion: types.Int64Value(1),
+		Checksum:         types.StringValue(sha256Hex("written")),
+	}
+	tests := []struct {
+		name        string
+		state       fileResourceModel
+		plan        fileResourceModel
+		lastWritten string
+		want        bool
+	}{
+		{
+			name:  "content edited in configuration",
+			state: fileResourceModel{Content: types.StringValue("old")},
+			plan:  fileResourceModel{Content: types.StringValue("new")},
+			want:  true,
+		},
+		{
+			name:  "nothing changed",
+			state: fileResourceModel{Content: types.StringValue("same"), Checksum: types.StringValue(sha256Hex("same"))},
+			plan:  fileResourceModel{Content: types.StringValue("same"), Checksum: types.StringValue(sha256Hex("same"))},
+			want:  false,
+		},
+		{
+			name:  "write-only version bumped",
+			state: writeOnlyState,
+			plan:  fileResourceModel{ContentWOVersion: types.Int64Value(2)},
+			want:  true,
+		},
+		{
+			name:        "write-only file edited outside terraform",
+			state:       fileResourceModel{ContentWOVersion: types.Int64Value(1), Checksum: types.StringValue(sha256Hex("edited on the NAS"))},
+			plan:        writeOnlyState,
+			lastWritten: sha256Hex("written"),
+			want:        true,
+		},
+		{
+			name:        "write-only file still matches the last write",
+			state:       writeOnlyState,
+			plan:        writeOnlyState,
+			lastWritten: sha256Hex("written"),
+			want:        false,
+		},
+		{
+			// A resource that predates the private-state entry, or one that was
+			// imported: with nothing to compare against, a rewrite would be a guess.
+			name:  "write-only file with no remembered checksum",
+			state: writeOnlyState,
+			plan:  writeOnlyState,
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fileContentWillChange(tt.state, tt.plan, tt.lastWritten); got != tt.want {
+				t.Errorf("fileContentWillChange = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFileResource_ModifyPlan_MarksRewrittenAttributesUnknown: Terraform carries
+// computed attributes forward from prior state, so a plan that leaves the old
+// checksum in place both hides the rewrite and trips the "inconsistent result
+// after apply" check.
+func TestFileResource_ModifyPlan_MarksRewrittenAttributesUnknown(t *testing.T) {
+	sch := fileResourceSchema(t)
+	state := fileObject(t, sch, map[string]tftypes.Value{
+		"id":                 tfString("/containers/conf/s3.json"),
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 1),
+		"checksum":           tfString(sha256Hex("written")),
+		"size":               tftypes.NewValue(tftypes.Number, 7),
+	})
+	bumped := fileObject(t, sch, map[string]tftypes.Value{
+		"id":                 tfString("/containers/conf/s3.json"),
+		"share_path":         tfString("/containers/conf"),
+		"name":               tfString("s3.json"),
+		"content_wo_version": tftypes.NewValue(tftypes.Number, 2),
+		"checksum":           tfString(sha256Hex("written")),
+		"size":               tftypes.NewValue(tftypes.Number, 7),
+	})
+
+	tests := []struct {
+		name        string
+		state       tftypes.Value
+		plan        tftypes.Value
+		wantUnknown bool
+	}{
+		{name: "version bumped", state: state, plan: bumped, wantUnknown: true},
+		{name: "no change", state: state, plan: state},
+		{name: "create", state: tftypes.NewValue(sch.Type().TerraformType(t.Context()), nil), plan: bumped},
+		{name: "destroy", state: state, plan: tftypes.NewValue(sch.Type().TerraformType(t.Context()), nil)},
+	}
+
+	r := NewFileResource().(*fileResource)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &resource.ModifyPlanResponse{Plan: tfsdk.Plan{Schema: sch, Raw: tt.plan}}
+			r.ModifyPlan(t.Context(), resource.ModifyPlanRequest{
+				State: tfsdk.State{Schema: sch, Raw: tt.state},
+				Plan:  tfsdk.Plan{Schema: sch, Raw: tt.plan},
+			}, resp)
+			if resp.Diagnostics.HasError() {
+				t.Fatalf("ModifyPlan returned errors: %v", resp.Diagnostics)
+			}
+			if resp.Plan.Raw.IsNull() {
+				return
+			}
+
+			var planned fileResourceModel
+			if diags := resp.Plan.Get(t.Context(), &planned); diags.HasError() {
+				t.Fatalf("reading plan failed: %v", diags)
+			}
+			if planned.Checksum.IsUnknown() != tt.wantUnknown || planned.Size.IsUnknown() != tt.wantUnknown {
+				t.Errorf("checksum/size unknown = %v/%v, want %v", planned.Checksum.IsUnknown(), planned.Size.IsUnknown(), tt.wantUnknown)
+			}
+		})
+	}
+}
+
+func TestPrivateChecksumRoundTrip(t *testing.T) {
+	checksum := sha256Hex("content")
+	if got := parsePrivateChecksum(privateChecksumValue(checksum)); got != checksum {
+		t.Errorf("round trip = %q, want %q", got, checksum)
+	}
+	for _, raw := range [][]byte{nil, {}, []byte("not json")} {
+		if got := parsePrivateChecksum(raw); got != "" {
+			t.Errorf("parsePrivateChecksum(%q) = %q, want an empty checksum", raw, got)
+		}
 	}
 }
 

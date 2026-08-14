@@ -40,3 +40,19 @@ resource "dsm_file" "keystore" {
   name           = "keystore.p12"
   content_base64 = filebase64("${path.module}/keystore.p12")
 }
+
+# Credentials that must never appear in Terraform state go through content_wo
+# instead (a write-only argument, Terraform 1.11 and later). The value is sent
+# to DSM during apply and stored nowhere else; state keeps only the checksum.
+#
+# Terraform cannot diff a value it does not store, so editing the content alone
+# produces no plan — increment content_wo_version to have it written again. An
+# edit made on the NAS is still noticed: the refreshed checksum no longer
+# matches the last write, and the next apply restores the configured content.
+resource "dsm_file" "database_password" {
+  share_path = "/${dsm_shared_folder.containers.name}/nextcloud/conf"
+  name       = "db-password"
+
+  content_wo         = var.database_password
+  content_wo_version = 1
+}

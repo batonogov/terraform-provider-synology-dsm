@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 
@@ -56,6 +57,36 @@ func clientFromProviderData(providerData any, diags *diag.Diagnostics) *client.C
 		return nil
 	}
 	return data.client
+}
+
+// privateChecksumValue encodes a checksum for the resource's private state,
+// which the framework requires to be valid JSON.
+//
+// Private state is where a write-only resource keeps the checksum of what it
+// last wrote: the configured value itself is never stored, so this is the only
+// thing a later refresh can compare the remote object against.
+func privateChecksumValue(checksum string) []byte {
+	encoded, err := json.Marshal(checksum)
+	if err != nil {
+		// A string always marshals; the branch exists so the caller needs no
+		// error path.
+		return nil
+	}
+	return encoded
+}
+
+// parsePrivateChecksum reads back what privateChecksumValue stored. An absent or
+// unreadable entry reports no checksum rather than an error: private state is a
+// cache of the last write, and a resource that predates it must keep working.
+func parsePrivateChecksum(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var checksum string
+	if err := json.Unmarshal(raw, &checksum); err != nil {
+		return ""
+	}
+	return checksum
 }
 
 // nullableString returns a null string when the value is empty, otherwise a

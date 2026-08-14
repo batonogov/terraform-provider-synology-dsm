@@ -48,9 +48,25 @@ All provider attributes can also be set via environment variables: `SYNOLOGY_DSM
 
 Most resources also have a matching data source. See [`docs/`](docs/index.md) for full reference.
 
+## Keeping secrets out of Terraform state
+
+`dsm_file` and `dsm_container_project` write content to the NAS, and that content is normally kept in Terraform state — which makes access to state equal to access to every credential it carries. Both resources therefore accept [write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) (Terraform 1.11 and later): `content_wo` / `content_base64_wo` and `compose_yaml_wo`. The value reaches DSM during apply and is stored neither in state nor in the plan file.
+
+```hcl
+resource "dsm_file" "database_password" {
+  share_path = "/containers/nextcloud/conf"
+  name       = "db-password"
+
+  content_wo         = var.database_password
+  content_wo_version = 1 # increment to write the current value again
+}
+```
+
+Terraform cannot diff a value it does not store, so the `_wo_version` counter is what asks for a rewrite. Drift is still detected in the other direction: state keeps a checksum (`checksum`, `compose_yaml_checksum`), and a file edited on the NAS no longer matches the last write, which plans an apply that restores the configured content.
+
 ## Requirements
 
-- Terraform >= 1.0
+- Terraform >= 1.0 (>= 1.11 for the write-only arguments above)
 - Synology DSM 7.2+ (DSM 6.x may differ)
 
 ## Development
