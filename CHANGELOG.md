@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.3.1...v0.4.0) (2026-08-14)
+
+
+### Features
+
+* write-only content for dsm_file and dsm_container_project ([#105](https://github.com/batonogov/terraform-provider-synology-dsm/issues/105)) ([fcc3638](https://github.com/batonogov/terraform-provider-synology-dsm/commit/fcc3638741e6a211868debc53dabf1fdc4b9eb0d))
+
 ## [0.3.1](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.3.0...v0.3.1) (2026-08-13)
 
 
