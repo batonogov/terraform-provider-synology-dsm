@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -789,6 +790,60 @@ func TestPrivateChecksumRoundTrip(t *testing.T) {
 		if got := parsePrivateChecksum(raw); got != "" {
 			t.Errorf("parsePrivateChecksum(%q) = %q, want an empty checksum", raw, got)
 		}
+	}
+}
+
+// fakePrivateStore stands in for the framework's private state, which lives in
+// an internal package a provider cannot construct.
+type fakePrivateStore struct {
+	data map[string][]byte
+}
+
+func (s *fakePrivateStore) SetKey(_ context.Context, key string, value []byte) diag.Diagnostics {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	if len(value) == 0 {
+		// The framework's own semantics: an empty value deletes the key.
+		delete(s.data, key)
+		return nil
+	}
+	s.data[key] = value
+	return nil
+}
+
+func (s *fakePrivateStore) GetKey(_ context.Context, key string) ([]byte, diag.Diagnostics) {
+	return s.data[key], nil
+}
+
+// TestChecksumSurvivesPrivateState checks the writer against the reader. The
+// drift detection of both write-only resources rests on this pair, and every
+// other test reaches it with a nil store, where both sides no-op.
+func TestChecksumSurvivesPrivateState(t *testing.T) {
+	store := &fakePrivateStore{}
+	var diags diag.Diagnostics
+	checksum := sha256Hex("written")
+
+	if got := lastChecksum(t.Context(), store, fileContentChecksumKey, &diags); got != "" {
+		t.Errorf("an empty store must report no checksum, got %q", got)
+	}
+	rememberChecksum(t.Context(), store, fileContentChecksumKey, checksum, &diags)
+	if got := lastChecksum(t.Context(), store, fileContentChecksumKey, &diags); got != checksum {
+		t.Errorf("checksum did not survive private state: %q, want %q", got, checksum)
+	}
+	if got := lastChecksum(t.Context(), store, composeChecksumKey, &diags); got != "" {
+		t.Errorf("the two resources must not share an entry, got %q", got)
+	}
+	if diags.HasError() {
+		t.Fatalf("private state round trip reported errors: %v", diags)
+	}
+
+	// A nil store is what a directly-driven method sees; it must stay silent
+	// rather than report the framework's "uninitialized ProviderData" error.
+	var missing *fakePrivateStore
+	rememberChecksum(t.Context(), missing, fileContentChecksumKey, checksum, &diags)
+	if diags.HasError() {
+		t.Errorf("a nil private store must be tolerated, got %v", diags)
 	}
 }
 

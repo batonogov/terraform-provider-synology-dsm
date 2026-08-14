@@ -113,7 +113,11 @@ func (r *containerProjectResource) Schema(_ context.Context, _ resource.SchemaRe
 					"(a write-only argument, Terraform 1.11 and later). Requires `compose_yaml_wo_version`. " +
 					"Because Terraform cannot diff a value it does not store, an edit to the configured document is only " +
 					"sent to DSM when `compose_yaml_wo_version` changes — but a project edited *outside* Terraform is " +
-					"still detected, because `compose_yaml_checksum` is compared against the checksum of the last write.",
+					"still detected, because `compose_yaml_checksum` is compared against the checksum of the last write.\n\n" +
+					"**This keeps the document out of Terraform state, not off the NAS.** Container Manager stores the " +
+					"resolved document in the project directory and returns it in full on every read, so a password " +
+					"interpolated into it is readable through File Station, SMB and any DSM backup. Put credentials in a " +
+					"`dsm_file` and reference it with `env_file`; use `compose_yaml_wo` for the document itself.",
 			},
 			"compose_yaml_wo_version": schema.Int64Attribute{
 				Optional: true,
@@ -263,13 +267,12 @@ func (r *containerProjectResource) ModifyPlan(ctx context.Context, req resource.
 		return
 	}
 
-	lastWritten, diags := req.Private.GetKey(ctx, composeChecksumKey)
-	resp.Diagnostics.Append(diags...)
+	lastWritten := lastChecksum(ctx, req.Private, composeChecksumKey, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	composeChanges := composeWillChange(state, plan, parsePrivateChecksum(lastWritten))
+	composeChanges := composeWillChange(state, plan, lastWritten)
 	// Any planned change at all reaches Update, and Update rebuilds the project
 	// and reports a fresh status and container ids — that holds for starting and
 	// stopping it, and even for the Terraform-only delete_on_destroy flag. The
@@ -354,11 +357,7 @@ func (r *containerProjectResource) Create(ctx context.Context, req resource.Crea
 	// The checksum remembered is the one DSM reports back, not the one that was
 	// sent: comparing a later refresh against the document Container Manager
 	// actually stores is what keeps a normalizing DSM from looking like drift.
-	// Private state is nil only when a test drives the method directly; every RPC
-	// the framework serves initializes it.
-	if resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, composeChecksumKey, privateChecksumValue(plan.ComposeChecksum.ValueString()))...)
-	}
+	rememberChecksum(ctx, resp.Private, composeChecksumKey, plan.ComposeChecksum.ValueString(), &resp.Diagnostics)
 }
 
 func (r *containerProjectResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -396,6 +395,13 @@ func (r *containerProjectResource) Read(ctx context.Context, req resource.ReadRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// See resource_file.go: a project this provider never wrote has no reference
+	// point for drift, so the first refresh adopts one — and only the first.
+	if lastChecksum(ctx, req.Private, composeChecksumKey, &resp.Diagnostics) == "" {
+		rememberChecksum(ctx, resp.Private, composeChecksumKey, state.ComposeChecksum.ValueString(), &resp.Diagnostics)
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -411,12 +417,37 @@ func (r *containerProjectResource) Update(ctx context.Context, req resource.Upda
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	compose, ok := composeDocument(plan, config, &resp.Diagnostics)
-	if !ok {
+	var state containerProjectResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	project, err := r.client.UpdateContainerProject(ctx, plan.ID.ValueString(), compose, plan.Running.ValueBool())
+	// Update runs for any planned change — `running`, `delete_on_destroy`, the
+	// compose document — but the document must only be written when the plan
+	// said it would be. Writing it on the strength of "the configuration holds
+	// one" would deploy an edit the practitioner deliberately left un-versioned,
+	// contradict the checksum the plan carried, and tear the containers down on
+	// the way. The same answer decides both.
+	lastWritten := lastChecksum(ctx, req.Private, composeChecksumKey, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	writeCompose := composeWillChange(state, plan, lastWritten)
+
+	var project *client.ContainerProject
+	var err error
+	if writeCompose {
+		compose, ok := composeDocument(plan, config, &resp.Diagnostics)
+		if !ok {
+			return
+		}
+		project, err = r.client.UpdateContainerProject(ctx, plan.ID.ValueString(), compose, plan.Running.ValueBool())
+	} else {
+		// Nothing to write, and with compose_yaml_wo there may be no document to
+		// hand over at all — an ephemeral source is gone by now.
+		project, err = r.client.SetContainerProjectRunning(ctx, plan.ID.ValueString(), plan.Running.ValueBool())
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update Container Manager project", containerProjectErrorDetail(err))
 		return
@@ -426,8 +457,11 @@ func (r *containerProjectResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-	if resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, composeChecksumKey, privateChecksumValue(plan.ComposeChecksum.ValueString()))...)
+	// Only a write moves the reference point. Recording it after a start or stop
+	// would adopt whatever the project holds — including an out-of-band edit
+	// this apply did not repair.
+	if writeCompose {
+		rememberChecksum(ctx, resp.Private, composeChecksumKey, plan.ComposeChecksum.ValueString(), &resp.Diagnostics)
 	}
 }
 
@@ -460,9 +494,9 @@ func (r *containerProjectResource) ImportState(ctx context.Context, req resource
 func composeDocument(plan, config containerProjectResourceModel, diags *diag.Diagnostics) (string, bool) {
 	switch {
 	case knownString(config.ComposeYAMLWO):
-		return config.ComposeYAMLWO.ValueString(), true
+		return nonEmptyCompose("compose_yaml_wo", config.ComposeYAMLWO.ValueString(), diags)
 	case knownString(plan.ComposeYAML):
-		return plan.ComposeYAML.ValueString(), true
+		return nonEmptyCompose("compose_yaml", plan.ComposeYAML.ValueString(), diags)
 	default:
 		diags.AddError(
 			"Missing Docker Compose configuration",
@@ -471,6 +505,22 @@ func composeDocument(plan, config containerProjectResourceModel, diags *diag.Dia
 		)
 		return "", false
 	}
+}
+
+// nonEmptyCompose repeats at apply time the check ValidateConfig can only make
+// when the value is known at plan time. A document that resolves to nothing —
+// an ephemeral source that came back empty — would otherwise be written and
+// built, which tears down every service in the project.
+func nonEmptyCompose(attribute, document string, diags *diag.Diagnostics) (string, bool) {
+	if strings.TrimSpace(document) == "" {
+		diags.AddAttributeError(
+			tfpath.Root(attribute),
+			"Empty Docker Compose configuration",
+			fmt.Sprintf("`%s` resolved to an empty document during apply. Writing it would stop and remove every service in the project, so nothing was sent to Container Manager.", attribute),
+		)
+		return "", false
+	}
+	return document, true
 }
 
 func applyContainerProjectToResourceModel(ctx context.Context, model *containerProjectResourceModel, project *client.ContainerProject, diags *diag.Diagnostics) {

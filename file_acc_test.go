@@ -133,8 +133,10 @@ func TestAccFile_writeOnlyContent(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("dsm_file.secret", "checksum", checksum(initial)),
 					resource.TestCheckResourceAttr("dsm_file.secret", "size", fmt.Sprint(len(initial))),
+					// content is an ordinary attribute, so its absence is a real
+					// assertion; content_wo is nulled out by the framework in every
+					// response, which would make asserting on it vacuous.
 					resource.TestCheckNoResourceAttr("dsm_file.secret", "content"),
-					resource.TestCheckNoResourceAttr("dsm_file.secret", "content_wo"),
 					resource.TestCheckResourceAttr("dsm_file.secret", "content_wo_version", "1"),
 				),
 			},

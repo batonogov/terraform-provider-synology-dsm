@@ -272,6 +272,51 @@ func TestClient_UpdateContainerProject_RebuildsAndRestarts(t *testing.T) {
 	}
 }
 
+// TestClient_SetContainerProjectRunning covers the path a caller takes when it
+// has no compose document to offer: managed write-only, the document is not in
+// state and its source may be gone. Nothing may be written or rebuilt.
+func TestClient_SetContainerProjectRunning(t *testing.T) {
+	restore := shrinkContainerProjectPolling(t)
+	defer restore()
+
+	status := "RUNNING"
+	var actions []string
+	client, server := newContainerProjectTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, method := containerProjectRequest(r)
+		switch method {
+		case "get":
+			writeContainerProjectResponse(w, map[string]interface{}{"id": "project-uuid", "name": "app", "status": status, "content": "services: {}\n"})
+		case "stop":
+			actions = append(actions, "stop")
+			status = "STOPPED"
+			writeContainerProjectResponse(w, map[string]interface{}{})
+		default:
+			t.Fatalf("unexpected method %q — a running-state change must not touch the compose document", method)
+		}
+	})
+	defer server.Close()
+
+	project, err := client.SetContainerProjectRunning(context.Background(), "project-uuid", false)
+	if err != nil {
+		t.Fatalf("SetContainerProjectRunning failed: %v", err)
+	}
+	if project.Running() {
+		t.Errorf("project reports running after a stop: %+v", project)
+	}
+	if !reflect.DeepEqual(actions, []string{"stop"}) {
+		t.Errorf("actions = %v, want a single stop", actions)
+	}
+
+	// Already in the requested state: nothing to do at all.
+	actions = nil
+	if _, err := client.SetContainerProjectRunning(context.Background(), "project-uuid", false); err != nil {
+		t.Fatalf("SetContainerProjectRunning failed: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Errorf("actions = %v, want none", actions)
+	}
+}
+
 func TestClient_UpdateContainerProject_ChangesRunningStateWithoutBuild(t *testing.T) {
 	restore := shrinkContainerProjectPolling(t)
 	defer restore()

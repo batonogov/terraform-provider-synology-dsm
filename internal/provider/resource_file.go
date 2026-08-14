@@ -116,7 +116,10 @@ func (r *fileResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					"(a write-only argument, Terraform 1.11 and later). Requires `content_wo_version`. " +
 					"Because Terraform cannot diff a value it does not store, an edit to the configured content is " +
 					"only sent to DSM when `content_wo_version` changes — but an edit made *outside* Terraform is " +
-					"still detected, because `checksum` is compared against the checksum of the last write.",
+					"still detected, because `checksum` is compared against the checksum of the last write.\n\n" +
+					"Note what that repair writes: the value the configuration holds *now*. A value edited but " +
+					"deliberately left un-versioned is not staged anywhere the provider can reach, so an out-of-band " +
+					"edit repaired later publishes it.",
 			},
 			"content_base64_wo": schema.StringAttribute{
 				Optional:  true,
@@ -283,13 +286,12 @@ func (r *fileResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 		return
 	}
 
-	lastWritten, diags := req.Private.GetKey(ctx, fileContentChecksumKey)
-	resp.Diagnostics.Append(diags...)
+	lastWritten := lastChecksum(ctx, req.Private, fileContentChecksumKey, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if !fileContentWillChange(state, plan, parsePrivateChecksum(lastWritten)) {
+	if !fileContentWillChange(state, plan, lastWritten) {
 		return
 	}
 
@@ -378,6 +380,11 @@ func (r *fileResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
+	// The checksum recorded is of the bytes sent, unlike dsm_container_project,
+	// which records the document DSM reports back: File Station stores a file
+	// verbatim, while a compose document passes through Container Manager and
+	// can come back normalized. If a DSM build ever turns out not to be
+	// byte-exact, this is where a permanent false drift would come from.
 	checksum := fileChecksum(content)
 	plan.ID = types.StringValue(filePath)
 	plan.Checksum = types.StringValue(checksum)
@@ -389,11 +396,7 @@ func (r *fileResource) Create(ctx context.Context, req resource.CreateRequest, r
 	clearFileWriteOnly(&plan)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
-	// Private state is nil only when a test drives the method directly; every
-	// RPC the framework serves initializes it.
-	if resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, fileContentChecksumKey, privateChecksumValue(checksum))...)
-	}
+	rememberChecksum(ctx, resp.Private, fileContentChecksumKey, checksum, &resp.Diagnostics)
 }
 
 func (r *fileResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -453,9 +456,19 @@ func (r *fileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	} else {
 		applyFileContent(&state, content)
 	}
-	state.Checksum = types.StringValue(fileChecksum(content))
+	checksum := fileChecksum(content)
+	state.Checksum = types.StringValue(checksum)
 	state.Size = types.Int64Value(int64(len(content)))
 	state.apply(info.Permissions)
+
+	// A resource this provider never wrote — imported, re-imported after a
+	// `state rm`, or carried over from a version without private state — has no
+	// reference point, and without one an out-of-band edit would go unnoticed
+	// forever. Adopt what DSM currently holds as the baseline, once: writing it
+	// on every refresh would move the goalposts and detect nothing.
+	if lastChecksum(ctx, req.Private, fileContentChecksumKey, &resp.Diagnostics) == "" {
+		rememberChecksum(ctx, resp.Private, fileContentChecksumKey, checksum, &resp.Diagnostics)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
@@ -494,11 +507,7 @@ func (r *fileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	clearFileWriteOnly(&plan)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
-	// Private state is nil only when a test drives the method directly; every
-	// RPC the framework serves initializes it.
-	if resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, fileContentChecksumKey, privateChecksumValue(checksum))...)
-	}
+	rememberChecksum(ctx, resp.Private, fileContentChecksumKey, checksum, &resp.Diagnostics)
 }
 
 func (r *fileResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

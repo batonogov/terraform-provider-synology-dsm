@@ -207,6 +207,39 @@ func (c *Client) CreateContainerProject(ctx context.Context, name, sharePath, co
 	})
 }
 
+// SetContainerProjectRunning starts or stops a project without touching its
+// compose document.
+//
+// UpdateContainerProject decides whether to rebuild by comparing the document
+// it is handed against the one DSM holds, which means a caller that only wants
+// to start or stop a project has to supply the current document — and a caller
+// managing the document write-only does not have it. Asking for the running
+// state on its own removes both the guesswork and the window in which a
+// re-read document could be stale.
+func (c *Client) SetContainerProjectRunning(ctx context.Context, id string, running bool) (*ContainerProject, error) {
+	c.containerProjectMu.Lock()
+	defer c.containerProjectMu.Unlock()
+
+	project, err := c.GetContainerProject(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if project.Running() != running {
+		action := "stop"
+		if running {
+			action = "start"
+		}
+		if err := c.runContainerProjectAction(ctx, id, action); err != nil {
+			return nil, err
+		}
+	}
+
+	return c.waitForContainerProject(ctx, id, func(p *ContainerProject) bool {
+		return containerProjectReached(p, running)
+	})
+}
+
 // UpdateContainerProject applies compose changes in a deterministic order. A
 // running project is stopped before rebuilding and restored to the requested
 // running state afterwards.

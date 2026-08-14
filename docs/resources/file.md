@@ -95,6 +95,8 @@ resource "dsm_file" "database_password" {
 - `content_base64` (String, Sensitive) Base64-encoded file content, for binary files or content that is not valid UTF-8. Stored in Terraform state; the write-only counterpart is `content_base64_wo`.
 - `content_base64_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Base64-encoded file content that is never written to Terraform state, for binary secrets. The write-only counterpart of `content_base64`; requires `content_wo_version`.
 - `content_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) UTF-8 file content that is never written to Terraform state or to the plan file (a write-only argument, Terraform 1.11 and later). Requires `content_wo_version`. Because Terraform cannot diff a value it does not store, an edit to the configured content is only sent to DSM when `content_wo_version` changes — but an edit made *outside* Terraform is still detected, because `checksum` is compared against the checksum of the last write.
+
+Note what that repair writes: the value the configuration holds *now*. A value edited but deliberately left un-versioned is not staged anywhere the provider can reach, so an out-of-band edit repaired later publishes it.
 - `content_wo_version` (Number) Version counter for `content_wo` / `content_base64_wo`. Required with either of them and rejected without them. Increment it to re-send the content to DSM. It is also the marker that keeps the file content out of state on refresh: a resource imported before `content_wo` was adopted holds its content in state until the first apply that sets both attributes.
 
 ### Read-Only

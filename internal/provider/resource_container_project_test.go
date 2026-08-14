@@ -3,6 +3,10 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -438,6 +442,82 @@ func TestContainerProjectResource_ModifyPlan_MarksRebuiltAttributesUnknown(t *te
 					planned.Status.IsUnknown(), planned.ContainerIDs.IsUnknown(), tt.wantStatusUnknown)
 			}
 		})
+	}
+}
+
+// TestContainerProjectResource_Update_LeavesComposeAloneWithoutAVersionBump is
+// the hazard that makes write-only mode dangerous if it is got wrong: Update
+// runs for any planned change, and reading the compose document out of the
+// configuration whenever one is there would deploy an edit the practitioner
+// deliberately did not version — tearing the containers down, and then failing
+// the apply because the plan carried the old checksum.
+func TestContainerProjectResource_Update_LeavesComposeAloneWithoutAVersionBump(t *testing.T) {
+	const deployed = "services:\n  db:\n    image: postgres:17\n"
+	var actions []string
+	status := "RUNNING"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		method := r.FormValue("method")
+		if method == "" {
+			method = r.URL.Query().Get("method")
+		}
+		actions = append(actions, method)
+		switch method {
+		case "stop":
+			status = "STOPPED"
+		case "start":
+			status = "RUNNING"
+		}
+		_, _ = fmt.Fprintf(w,
+			`{"success":true,"data":{"id":"uuid","name":"database","share_path":"/containers/database","status":%q,"content":%q}}`,
+			status, deployed)
+	}))
+	t.Cleanup(server.Close)
+
+	sch := containerProjectSchema(t).Schema
+	base := map[string]tftypes.Value{
+		"id":                      tftypes.NewValue(tftypes.String, "uuid"),
+		"name":                    tftypes.NewValue(tftypes.String, "database"),
+		"share_path":              tftypes.NewValue(tftypes.String, "/containers/database"),
+		"compose_yaml_wo_version": tftypes.NewValue(tftypes.Number, 1),
+		"compose_yaml_checksum":   tftypes.NewValue(tftypes.String, sha256Hex(deployed)),
+		"running":                 tftypes.NewValue(tftypes.Bool, true),
+		"delete_on_destroy":       tftypes.NewValue(tftypes.Bool, false),
+		"status":                  tftypes.NewValue(tftypes.String, "RUNNING"),
+	}
+	stopped := map[string]tftypes.Value{}
+	for name, value := range base {
+		stopped[name] = value
+	}
+	stopped["running"] = tftypes.NewValue(tftypes.Bool, false)
+
+	// The configuration holds an edited document, but the counter still says 1.
+	config := containerProjectObject(t, sch, map[string]tftypes.Value{
+		"name":                    tftypes.NewValue(tftypes.String, "database"),
+		"share_path":              tftypes.NewValue(tftypes.String, "/containers/database"),
+		"compose_yaml_wo":         tftypes.NewValue(tftypes.String, "services:\n  db:\n    image: postgres:18\n"),
+		"compose_yaml_wo_version": tftypes.NewValue(tftypes.Number, 1),
+		"running":                 tftypes.NewValue(tftypes.Bool, false),
+	})
+
+	r := &containerProjectResource{client: client.NewClient(server.URL, "admin", "", false)}
+	resp := &resource.UpdateResponse{State: tfsdk.State{Schema: sch, Raw: containerProjectObject(t, sch, base)}}
+	r.Update(t.Context(), resource.UpdateRequest{
+		State:  tfsdk.State{Schema: sch, Raw: containerProjectObject(t, sch, base)},
+		Plan:   tfsdk.Plan{Schema: sch, Raw: containerProjectObject(t, sch, stopped)},
+		Config: tfsdk.Config{Schema: sch, Raw: config},
+	}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Update returned errors: %v", resp.Diagnostics)
+	}
+
+	for _, action := range actions {
+		if action == "update" || action == "build" {
+			t.Fatalf("an un-versioned edit must not be deployed, DSM saw: %v", actions)
+		}
+	}
+	if !slices.Contains(actions, "stop") {
+		t.Errorf("the requested stop must still happen, DSM saw: %v", actions)
 	}
 }
 

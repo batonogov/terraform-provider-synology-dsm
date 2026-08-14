@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
+	"strconv"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -59,20 +61,57 @@ func clientFromProviderData(providerData any, diags *diag.Diagnostics) *client.C
 	return data.client
 }
 
-// privateChecksumValue encodes a checksum for the resource's private state,
-// which the framework requires to be valid JSON.
+// privateChecksumStore is the part of the framework's private state that the
+// write-only resources use. It is an interface because the concrete type lives
+// in an internal framework package, which a provider cannot name — and because
+// a test can then supply its own store.
+type privateChecksumStore interface {
+	SetKey(ctx context.Context, key string, value []byte) diag.Diagnostics
+	GetKey(ctx context.Context, key string) ([]byte, diag.Diagnostics)
+}
+
+// rememberChecksum records the checksum of what a resource just wrote.
 //
-// Private state is where a write-only resource keeps the checksum of what it
-// last wrote: the configured value itself is never stored, so this is the only
-// thing a later refresh can compare the remote object against.
-func privateChecksumValue(checksum string) []byte {
-	encoded, err := json.Marshal(checksum)
-	if err != nil {
-		// A string always marshals; the branch exists so the caller needs no
-		// error path.
-		return nil
+// Private state is where a write-only resource keeps it: the configured value
+// itself is never stored, so this is the only thing a later refresh can compare
+// the remote object against.
+func rememberChecksum(ctx context.Context, store privateChecksumStore, key, checksum string, diags *diag.Diagnostics) {
+	if privateStoreUnavailable(store) {
+		return
 	}
-	return encoded
+	diags.Append(store.SetKey(ctx, key, privateChecksumValue(checksum))...)
+}
+
+// lastChecksum reads back what rememberChecksum stored. An absent entry reports
+// no checksum rather than an error: a resource created before this existed, or
+// imported, simply has no reference point yet.
+func lastChecksum(ctx context.Context, store privateChecksumStore, key string, diags *diag.Diagnostics) string {
+	if privateStoreUnavailable(store) {
+		return ""
+	}
+	raw, readDiags := store.GetKey(ctx, key)
+	diags.Append(readDiags...)
+	return parsePrivateChecksum(raw)
+}
+
+// privateStoreUnavailable reports the case a unit test creates and an RPC never
+// does: a response whose private state was left nil. The framework's type
+// tolerates that on read but answers a write with a diagnostic, and a typed nil
+// inside an interface is not caught by a plain `== nil`.
+func privateStoreUnavailable(store privateChecksumStore) bool {
+	if store == nil {
+		return true
+	}
+	value := reflect.ValueOf(store)
+	return value.Kind() == reflect.Pointer && value.IsNil()
+}
+
+// privateChecksumValue encodes a checksum for private state, which the
+// framework requires to be valid JSON. A checksum is hex, so quoting is all it
+// takes — and json.Marshal's unreachable error branch is worth avoiding here,
+// because an empty value would tell the framework to *delete* the key.
+func privateChecksumValue(checksum string) []byte {
+	return []byte(strconv.Quote(checksum))
 }
 
 // parsePrivateChecksum reads back what privateChecksumValue stored. An absent or
