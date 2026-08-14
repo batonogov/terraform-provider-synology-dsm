@@ -265,13 +265,19 @@ func (r *containerProjectResource) ModifyPlan(ctx context.Context, req resource.
 		return
 	}
 
-	if !composeWillChange(state, plan, parsePrivateChecksum(lastWritten)) {
+	composeChanges := composeWillChange(state, plan, parsePrivateChecksum(lastWritten))
+	// Starting or stopping the project changes its status and its container ids
+	// just as a rebuild does, and Update is called for it either way.
+	runningChanges := !plan.Running.Equal(state.Running)
+	if !composeChanges && !runningChanges {
 		return
 	}
 
-	// The rebuild restarts containers, so everything the update reports back is
-	// planned as unknown rather than carried forward from the previous state.
-	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root("compose_yaml_checksum"), types.StringUnknown())...)
+	// Everything the update reports back is planned as unknown rather than
+	// carried forward from the previous state, which apply would then contradict.
+	if composeChanges {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root("compose_yaml_checksum"), types.StringUnknown())...)
+	}
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root("status"), types.StringUnknown())...)
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root("container_ids"), types.ListUnknown(types.StringType))...)
 }

@@ -371,20 +371,33 @@ func TestContainerProjectResource_ModifyPlan_MarksRebuiltAttributesUnknown(t *te
 		"status":                  tftypes.NewValue(tftypes.String, "RUNNING"),
 		"container_ids":           containerIDs,
 	}
-	bumped := map[string]tftypes.Value{}
-	for name, value := range base {
-		bumped[name] = value
+	base["running"] = tftypes.NewValue(tftypes.Bool, true)
+	variant := func(attribute string, value tftypes.Value) map[string]tftypes.Value {
+		values := map[string]tftypes.Value{}
+		for name, base := range base {
+			values[name] = base
+		}
+		values[attribute] = value
+		return values
 	}
-	bumped["compose_yaml_wo_version"] = tftypes.NewValue(tftypes.Number, 2)
+	bumped := variant("compose_yaml_wo_version", tftypes.NewValue(tftypes.Number, 2))
+	stopped := variant("running", tftypes.NewValue(tftypes.Bool, false))
 
 	state := containerProjectObject(t, sch, base)
 	tests := []struct {
-		name        string
-		state       tftypes.Value
-		plan        tftypes.Value
-		wantUnknown bool
+		name                string
+		state               tftypes.Value
+		plan                tftypes.Value
+		wantChecksumUnknown bool
+		wantStatusUnknown   bool
 	}{
-		{name: "version bumped", state: state, plan: containerProjectObject(t, sch, bumped), wantUnknown: true},
+		{name: "version bumped", state: state, plan: containerProjectObject(t, sch, bumped), wantChecksumUnknown: true, wantStatusUnknown: true},
+		{
+			// Stopping the project changes its status and container ids without
+			// touching the compose document; Update is called for it all the same.
+			name: "project stopped", state: state, plan: containerProjectObject(t, sch, stopped),
+			wantStatusUnknown: true,
+		},
 		{name: "no change", state: state, plan: state},
 		{name: "create", state: tftypes.NewValue(sch.Type().TerraformType(t.Context()), nil), plan: state},
 		{name: "destroy", state: state, plan: tftypes.NewValue(sch.Type().TerraformType(t.Context()), nil)},
@@ -409,11 +422,12 @@ func TestContainerProjectResource_ModifyPlan_MarksRebuiltAttributesUnknown(t *te
 			if diags := resp.Plan.Get(t.Context(), &planned); diags.HasError() {
 				t.Fatalf("reading plan failed: %v", diags)
 			}
-			unknown := planned.ComposeChecksum.IsUnknown() && planned.Status.IsUnknown() && planned.ContainerIDs.IsUnknown()
-			anyUnknown := planned.ComposeChecksum.IsUnknown() || planned.Status.IsUnknown() || planned.ContainerIDs.IsUnknown()
-			if tt.wantUnknown != unknown || tt.wantUnknown != anyUnknown {
-				t.Errorf("checksum/status/container_ids unknown = %v/%v/%v, want all %v",
-					planned.ComposeChecksum.IsUnknown(), planned.Status.IsUnknown(), planned.ContainerIDs.IsUnknown(), tt.wantUnknown)
+			if planned.ComposeChecksum.IsUnknown() != tt.wantChecksumUnknown {
+				t.Errorf("compose_yaml_checksum unknown = %v, want %v", planned.ComposeChecksum.IsUnknown(), tt.wantChecksumUnknown)
+			}
+			if planned.Status.IsUnknown() != tt.wantStatusUnknown || planned.ContainerIDs.IsUnknown() != tt.wantStatusUnknown {
+				t.Errorf("status/container_ids unknown = %v/%v, want %v",
+					planned.Status.IsUnknown(), planned.ContainerIDs.IsUnknown(), tt.wantStatusUnknown)
 			}
 		})
 	}

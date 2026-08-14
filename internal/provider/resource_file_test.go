@@ -700,6 +700,11 @@ func TestFileResource_ModifyPlan_MarksRewrittenAttributesUnknown(t *testing.T) {
 			if planned.Checksum.IsUnknown() != tt.wantUnknown || planned.Size.IsUnknown() != tt.wantUnknown {
 				t.Errorf("checksum/size unknown = %v/%v, want %v", planned.Checksum.IsUnknown(), planned.Size.IsUnknown(), tt.wantUnknown)
 			}
+			// Update re-reads them from File Station, so they cannot be planned as
+			// the values prior state happened to hold.
+			if planned.PosixMode.IsUnknown() != tt.wantUnknown || planned.ACLMode.IsUnknown() != tt.wantUnknown {
+				t.Errorf("posix_mode/acl_mode unknown = %v/%v, want %v", planned.PosixMode.IsUnknown(), planned.ACLMode.IsUnknown(), tt.wantUnknown)
+			}
 		})
 	}
 }

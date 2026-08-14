@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -289,6 +290,22 @@ func (r *fileResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root("checksum"), types.StringUnknown())...)
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root("size"), types.Int64Unknown())...)
+	// Update re-reads the permissions from File Station, so they are planned as
+	// unknown for the same reason: a value carried forward from prior state that
+	// apply then contradicts is an error, not a warning.
+	for _, attribute := range []struct {
+		name  string
+		value attr.Value
+	}{
+		{"posix_mode", types.StringUnknown()},
+		{"posix_owner", types.StringUnknown()},
+		{"posix_group", types.StringUnknown()},
+		{"posix_uid", types.Int64Unknown()},
+		{"posix_gid", types.Int64Unknown()},
+		{"acl_mode", types.BoolUnknown()},
+	} {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, tfpath.Root(attribute.name), attribute.value)...)
+	}
 }
 
 // fileContentWillChange reports whether an apply is going to write the file
