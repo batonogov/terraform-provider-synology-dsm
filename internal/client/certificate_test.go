@@ -1060,3 +1060,115 @@ func firstTextIndex(parts []uploadedPart) int {
 	}
 	return len(parts)
 }
+
+func TestFindCertificateServiceBinding(t *testing.T) {
+	c := newCertificateTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeCertAPIResponse(w, map[string]interface{}{
+			"certificates": []map[string]interface{}{
+				{
+					"id": "certA",
+					"services": []map[string]interface{}{
+						{
+							"service":      "synology.at.caddy",
+							"display_name": "caddy",
+							"owner":        "root",
+							"isPkg":        false,
+						},
+					},
+				},
+				{
+					"id": "certB",
+					"services": []map[string]interface{}{
+						{
+							"service":      "default",
+							"display_name": "DSM Desktop Service",
+							"owner":        "root",
+							"isPkg":        false,
+						},
+					},
+				},
+			},
+		})
+	})
+
+	binding, err := c.FindCertificateServiceBinding(t.Context(), "synology.at.caddy")
+	if err != nil {
+		t.Fatalf("find binding: %v", err)
+	}
+	if binding.CertificateID != "certA" {
+		t.Errorf("expected certificate certA, got %q", binding.CertificateID)
+	}
+	if stringValue(binding.Service, "display_name") != "caddy" {
+		t.Errorf("service object not preserved verbatim: %v", binding.Service)
+	}
+
+	if _, err := c.FindCertificateServiceBinding(t.Context(), "does.not.exist"); !errors.Is(err, ErrCertificateServiceNotFound) {
+		t.Errorf("expected ErrCertificateServiceNotFound, got %v", err)
+	}
+}
+
+func TestSetCertificateService_RequestShape(t *testing.T) {
+	var captured url.Values
+
+	c := newCertificateTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		captured = r.PostForm
+		writeCertAPIResponse(w, map[string]interface{}{})
+	})
+
+	service := map[string]interface{}{
+		"service":      "synology.at.caddy",
+		"display_name": "caddy",
+		"owner":        "root",
+		"isPkg":        false,
+	}
+
+	if err := c.SetCertificateService(t.Context(), service, "certA", "certB"); err != nil {
+		t.Fatalf("set certificate service: %v", err)
+	}
+
+	if got := captured.Get("api"); got != certificateServiceAPI {
+		t.Errorf("api = %q, want %q", got, certificateServiceAPI)
+	}
+	if got := captured.Get("method"); got != "set" {
+		t.Errorf("method = %q, want set", got)
+	}
+
+	var settings []map[string]interface{}
+	if err := json.Unmarshal([]byte(captured.Get("settings")), &settings); err != nil {
+		t.Fatalf("settings is not valid JSON: %v", err)
+	}
+	if len(settings) != 1 {
+		t.Fatalf("expected exactly one settings entry, got %d", len(settings))
+	}
+	entry := settings[0]
+	if entry["old_id"] != "certA" {
+		t.Errorf("old_id = %v, want certA", entry["old_id"])
+	}
+	if entry["id"] != "certB" {
+		t.Errorf("id = %v, want certB", entry["id"])
+	}
+	svc, ok := entry["service"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("service entry is not an object: %T", entry["service"])
+	}
+	if svc["service"] != "synology.at.caddy" {
+		t.Errorf("service object not round-tripped: %v", svc)
+	}
+}
+
+func TestSetCertificateService_ReplacementIsError(t *testing.T) {
+	c := newCertificateTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeCertAPIError(w, 120)
+	})
+
+	err := c.SetCertificateService(t.Context(), map[string]interface{}{"service": "x"}, "", "certB")
+	if err == nil {
+		t.Fatal("expected an error from a failed DSM response")
+	}
+	if !strings.Contains(err.Error(), "bind certificate") {
+		t.Errorf("error should name the operation: %v", err)
+	}
+}
