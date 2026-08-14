@@ -65,7 +65,12 @@ func (r *fileResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"folder in Synology ACL mode the mode is typically `\"000\"`, which is invisible to DSM itself " +
 			"and to SMB but denies every container that bind-mounts the path and does not run as root. " +
 			"Fixing it needs a `chmod` on the NAS — over SSH, or through a `dsm_scheduled_task` running as " +
-			"root if that is to stay in the configuration.",
+			"root if that is to stay in the configuration.\n\n" +
+			"**Importing a file that is going to be managed write-only writes its content to state once.** " +
+			"`terraform import` is followed by a refresh, and a refresh has no access to the configuration: the only " +
+			"marker for write-only mode is `content_wo_version`, which reaches state on the first apply and not before. " +
+			"Treat a secret imported that way as having been in state, and rotate it — or create the file rather than " +
+			"importing it.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,

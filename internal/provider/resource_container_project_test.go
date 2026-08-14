@@ -380,8 +380,10 @@ func TestContainerProjectResource_ModifyPlan_MarksRebuiltAttributesUnknown(t *te
 		values[attribute] = value
 		return values
 	}
+	base["delete_on_destroy"] = tftypes.NewValue(tftypes.Bool, false)
 	bumped := variant("compose_yaml_wo_version", tftypes.NewValue(tftypes.Number, 2))
 	stopped := variant("running", tftypes.NewValue(tftypes.Bool, false))
+	adopted := variant("delete_on_destroy", tftypes.NewValue(tftypes.Bool, true))
 
 	state := containerProjectObject(t, sch, base)
 	tests := []struct {
@@ -396,6 +398,12 @@ func TestContainerProjectResource_ModifyPlan_MarksRebuiltAttributesUnknown(t *te
 			// Stopping the project changes its status and container ids without
 			// touching the compose document; Update is called for it all the same.
 			name: "project stopped", state: state, plan: containerProjectObject(t, sch, stopped),
+			wantStatusUnknown: true,
+		},
+		{
+			// Update rebuilds the project for any change that reaches it, even a
+			// flag Terraform alone cares about.
+			name: "delete_on_destroy toggled", state: state, plan: containerProjectObject(t, sch, adopted),
 			wantStatusUnknown: true,
 		},
 		{name: "no change", state: state, plan: state},

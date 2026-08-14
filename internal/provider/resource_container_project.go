@@ -65,7 +65,11 @@ func (r *containerProjectResource) Schema(_ context.Context, _ resource.SchemaRe
 			"through DSM normally has mode `000` with its real rules in the ACL, which DSM and SMB honour and " +
 			"Docker does not — so a container running as anything but root cannot read or write it. " +
 			"`dsm_shared_folder` and `dsm_file` report the mode in `posix_mode`, but no DSM API can change it; " +
-			"that needs a `chmod` on the NAS.",
+			"that needs a `chmod` on the NAS.\n\n" +
+			"**Importing a project that is going to be managed through `compose_yaml_wo` writes its compose document " +
+			"to state once.** `terraform import` is followed by a refresh, and a refresh has no access to the " +
+			"configuration: the only marker for write-only mode is `compose_yaml_wo_version`, which reaches state on " +
+			"the first apply and not before. Treat credentials in an imported document as having been in state.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -266,10 +270,12 @@ func (r *containerProjectResource) ModifyPlan(ctx context.Context, req resource.
 	}
 
 	composeChanges := composeWillChange(state, plan, parsePrivateChecksum(lastWritten))
-	// Starting or stopping the project changes its status and its container ids
-	// just as a rebuild does, and Update is called for it either way.
-	runningChanges := !plan.Running.Equal(state.Running)
-	if !composeChanges && !runningChanges {
+	// Any planned change at all reaches Update, and Update rebuilds the project
+	// and reports a fresh status and container ids — that holds for starting and
+	// stopping it, and even for the Terraform-only delete_on_destroy flag. The
+	// drift case is the other way round: nothing in the plan differs, and the
+	// rewrite is asked for by a checksum that no longer matches the last write.
+	if !composeChanges && req.Plan.Raw.Equal(req.State.Raw) {
 		return
 	}
 

@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Uploads a file into a Synology shared folder through File Station. Intended for configuration files that a container project or a service reads from disk, so that secrets no longer have to be smuggled through Docker Compose YAML.
   The POSIX mode and ownership the file lands with are reported in posix_mode, posix_owner, posix_uid and friends, but cannot be set: DSM exposes no API that writes them. On a shared folder in Synology ACL mode the mode is typically "000", which is invisible to DSM itself and to SMB but denies every container that bind-mounts the path and does not run as root. Fixing it needs a chmod on the NAS — over SSH, or through a dsm_scheduled_task running as root if that is to stay in the configuration.
+  Importing a file that is going to be managed write-only writes its content to state once. terraform import is followed by a refresh, and a refresh has no access to the configuration: the only marker for write-only mode is content_wo_version, which reaches state on the first apply and not before. Treat a secret imported that way as having been in state, and rotate it — or create the file rather than importing it.
 ---
 
 # dsm_file (Resource)
@@ -12,6 +13,8 @@ description: |-
 Uploads a file into a Synology shared folder through File Station. Intended for configuration files that a container project or a service reads from disk, so that secrets no longer have to be smuggled through Docker Compose YAML.
 
 The POSIX mode and ownership the file lands with are reported in `posix_mode`, `posix_owner`, `posix_uid` and friends, but cannot be set: DSM exposes no API that writes them. On a shared folder in Synology ACL mode the mode is typically `"000"`, which is invisible to DSM itself and to SMB but denies every container that bind-mounts the path and does not run as root. Fixing it needs a `chmod` on the NAS — over SSH, or through a `dsm_scheduled_task` running as root if that is to stay in the configuration.
+
+**Importing a file that is going to be managed write-only writes its content to state once.** `terraform import` is followed by a refresh, and a refresh has no access to the configuration: the only marker for write-only mode is `content_wo_version`, which reaches state on the first apply and not before. Treat a secret imported that way as having been in state, and rotate it — or create the file rather than importing it.
 
 ## Example Usage
 

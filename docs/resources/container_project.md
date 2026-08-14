@@ -7,6 +7,7 @@ description: |-
   Two things about bind mounts are worth knowing before writing the compose file, because neither fails in a way that points at the cause.
   Every Synology shared folder contains an @eaDir metadata directory, so bind-mounting a share root at a path a service expects to find empty fails — PostgreSQL's initdb reports "directory exists but is not empty". Mount a subdirectory of the share instead.
   A bind mount also enforces POSIX mode bits rather than the Synology ACL. A shared folder created through DSM normally has mode 000 with its real rules in the ACL, which DSM and SMB honour and Docker does not — so a container running as anything but root cannot read or write it. dsm_shared_folder and dsm_file report the mode in posix_mode, but no DSM API can change it; that needs a chmod on the NAS.
+  Importing a project that is going to be managed through compose_yaml_wo writes its compose document to state once. terraform import is followed by a refresh, and a refresh has no access to the configuration: the only marker for write-only mode is compose_yaml_wo_version, which reaches state on the first apply and not before. Treat credentials in an imported document as having been in state.
 ---
 
 # dsm_container_project (Resource)
@@ -18,6 +19,8 @@ Two things about bind mounts are worth knowing before writing the compose file, 
 Every Synology shared folder contains an `@eaDir` metadata directory, so bind-mounting a share root at a path a service expects to find empty fails — PostgreSQL's `initdb` reports "directory exists but is not empty". Mount a subdirectory of the share instead.
 
 A bind mount also enforces POSIX mode bits rather than the Synology ACL. A shared folder created through DSM normally has mode `000` with its real rules in the ACL, which DSM and SMB honour and Docker does not — so a container running as anything but root cannot read or write it. `dsm_shared_folder` and `dsm_file` report the mode in `posix_mode`, but no DSM API can change it; that needs a `chmod` on the NAS.
+
+**Importing a project that is going to be managed through `compose_yaml_wo` writes its compose document to state once.** `terraform import` is followed by a refresh, and a refresh has no access to the configuration: the only marker for write-only mode is `compose_yaml_wo_version`, which reaches state on the first apply and not before. Treat credentials in an imported document as having been in state.
 
 ## Example Usage
 
