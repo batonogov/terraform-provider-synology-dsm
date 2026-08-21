@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 func TestFirewallRuleResource_Metadata(t *testing.T) {
@@ -159,6 +161,76 @@ func TestAppendLockoutWarning(t *testing.T) {
 	}
 	if !strings.Contains(diagnosticsText(diags), "applied anyway") {
 		t.Errorf("warning does not say the change went through:\n%s", diagnosticsText(diags))
+	}
+}
+
+// A priority the profile is too short to hold must be said out loud on refresh.
+//
+// The write path deliberately stays quiet about it: mid-apply it cannot tell an
+// unreachable priority from one whose neighbours have not been created yet. A
+// refresh has the whole list and no concurrent creates, so the same check is
+// unambiguous there — and it has to be made somewhere, because the resulting
+// diff never converges on its own.
+func TestAppendUnreachablePriorityWarning(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured types.Int64
+		actual     int
+		ruleCount  int
+		wantWarn   bool
+	}{
+		{name: "within reach", configured: types.Int64Value(2), actual: 2, ruleCount: 3},
+		{name: "last position", configured: types.Int64Value(2), actual: 2, ruleCount: 3},
+		{
+			name: "moved in DSM is ordinary drift, not this warning",
+			// The rule was configured for 0 and sits at 2: a real diff, but one an
+			// apply does close, so this warning must stay out of it.
+			configured: types.Int64Value(0), actual: 2, ruleCount: 3,
+		},
+		{name: "not yet applied", configured: types.Int64Null(), actual: 0, ruleCount: 3},
+		{name: "unknown", configured: types.Int64Unknown(), actual: 0, ruleCount: 3},
+		{name: "empty adapter", configured: types.Int64Value(4), actual: 0, ruleCount: 0},
+		{
+			name: "sparse numbering", configured: types.Int64Value(20), actual: 1, ruleCount: 3,
+			wantWarn: true,
+		},
+		{
+			name: "one past the end", configured: types.Int64Value(3), actual: 2, ruleCount: 3,
+			wantWarn: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			appendUnreachablePriorityWarning(&diags, "default", "eth0", "web", tt.configured, tt.actual, tt.ruleCount)
+
+			if diags.HasError() {
+				t.Fatalf("refresh must not fail over ordering: %v", diags)
+			}
+			if !tt.wantWarn {
+				if len(diags) != 0 {
+					t.Fatalf("unexpected warning: %s", diagnosticsText(diags))
+				}
+				return
+			}
+			if diags.WarningsCount() != 1 {
+				t.Fatalf("expected one warning, got %v", diags)
+			}
+
+			text := diagnosticsText(diags)
+			for _, want := range []string{
+				"web",                                   // which rule
+				fmt.Sprint(tt.configured.ValueInt64()),  // what it asked for
+				fmt.Sprintf("position %d", tt.actual),   // where it actually is
+				fmt.Sprintf("%d rule(s)", tt.ruleCount), // how long the list is
+				"will not settle by itself",             // that the diff is permanent
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("warning does not mention %q:\n%s", want, text)
+				}
+			}
+		})
 	}
 }
 
