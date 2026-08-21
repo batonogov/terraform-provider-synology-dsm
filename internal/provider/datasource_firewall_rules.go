@@ -25,6 +25,7 @@ type firewallRulesDataSourceModel struct {
 	Profile         types.String             `tfsdk:"profile"`
 	FirewallEnabled types.Bool               `tfsdk:"firewall_enabled"`
 	ProfileActive   types.Bool               `tfsdk:"profile_active"`
+	DefaultPolicy   types.Map                `tfsdk:"default_policy"`
 	Rules           []firewallRuleEntryModel `tfsdk:"rules"`
 }
 
@@ -65,6 +66,16 @@ func (d *firewallRulesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 			"profile_active": schema.BoolAttribute{
 				Computed:    true,
 				Description: "Whether this profile is the one currently in force. Rules in a standby profile are stored but not enforced.",
+			},
+			"default_policy": schema.MapAttribute{
+				Computed:    true,
+				ElementType: types.StringType,
+				Description: "What the profile does with traffic that matches no rule, keyed by network adapter: " +
+					"`allow`, `deny`, or `none`. This is the \"Allow access\" / \"Deny access\" choice at the bottom of the " +
+					"DSM firewall page, and it decides the meaning of the whole rule list — a list of allow rules above a " +
+					"`deny` default is a whitelist, the same list above an `allow` default enforces nothing. DSM stores it " +
+					"per adapter rather than once per profile. The `global` pseudo-interface is a pre-table rather than an " +
+					"interface and normally carries `none`. Manage it with `dsm_firewall`.",
 			},
 			"rules": schema.ListNestedAttribute{
 				Computed:    true,
@@ -157,6 +168,13 @@ func (d *firewallRulesDataSource) Read(ctx context.Context, req datasource.ReadR
 	config.ID = types.StringValue(fmt.Sprintf("firewall-rules:%s", profileName))
 	config.FirewallEnabled = types.BoolValue(settings.Enabled)
 	config.ProfileActive = types.BoolValue(settings.ActiveProfile == profileName)
+
+	defaultPolicy, diags := stringMapValue(ctx, profile.DefaultPolicyNames())
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	config.DefaultPolicy = defaultPolicy
 
 	ruleTotal := 0
 	for _, rules := range profile.Rules {

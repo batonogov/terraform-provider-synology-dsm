@@ -733,6 +733,25 @@ func (p *FirewallProfile) clone() *FirewallProfile {
 // is reported to crash synoscgi (HTTP 502) on DSM 7.2.2 when handed a rule
 // object with concrete fields.
 func (c *Client) writeFirewallProfile(ctx context.Context, profile *FirewallProfile, settings *FirewallSettings) error {
+	if err := c.saveFirewallProfile(ctx, profile); err != nil {
+		return err
+	}
+
+	// Applying a profile that is not the active one would switch DSM over to it.
+	// Saving is the whole job in that case.
+	if settings.ActiveProfile != profile.Name {
+		return nil
+	}
+	return c.applyFirewallProfile(ctx, profile.Name)
+}
+
+// saveFirewallProfile is the `set` half of writeFirewallProfile on its own.
+//
+// Split out because the profile-level writes in firewall_settings.go may change
+// the active profile in the same operation: they have to decide for themselves
+// which profile to apply, and applying here as well would either commit the
+// wrong profile or commit the right one twice.
+func (c *Client) saveFirewallProfile(ctx context.Context, profile *FirewallProfile) error {
 	encoded, err := json.Marshal(profile.toWire())
 	if err != nil {
 		return fmt.Errorf("encode firewall profile: %w", err)
@@ -745,13 +764,7 @@ func (c *Client) writeFirewallProfile(ctx context.Context, profile *FirewallProf
 	if _, err := c.DoAPIPost(ctx, "SYNO.Core.Security.Firewall.Profile", "1", "set", params); err != nil {
 		return fmt.Errorf("save firewall profile %q: %w", profile.Name, err)
 	}
-
-	// Applying a profile that is not the active one would switch DSM over to it.
-	// Saving is the whole job in that case.
-	if settings.ActiveProfile != profile.Name {
-		return nil
-	}
-	return c.applyFirewallProfile(ctx, profile.Name)
+	return nil
 }
 
 // applyFirewallProfile runs the two-phase commit that makes a saved profile live.

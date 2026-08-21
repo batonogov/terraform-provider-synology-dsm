@@ -21,3 +21,10 @@ output "open_doors" {
 output "profile_is_enforced" {
   value = data.dsm_firewall_rules.current.firewall_enabled && data.dsm_firewall_rules.current.profile_active
 }
+
+# The list above only means what the fall-through says it means: the same allow
+# rules over a `deny` default are a whitelist, and over an `allow` default they
+# enforce nothing at all. DSM keeps this per network adapter.
+output "default_policy" {
+  value = data.dsm_firewall_rules.current.default_policy
+}

@@ -85,6 +85,24 @@ func TestAccPreCheckReverseProxy(t *testing.T) {
 	}
 }
 
+// TestAccPreCheckFirewall gates the firewall acceptance tests.
+//
+// These are the most dangerous tests in the suite, and the most heavily gated.
+// dsm_firewall writes the global enable switch, which profile is in force, and
+// that profile's default policy — every one of which can cut the test runner off
+// from the NAS it is testing, with physical access as the only way back. On top
+// of that the write side of SYNO.Core.Security.Firewall is reconstructed rather
+// than captured, so an unexpected firmware fails these tests loudly instead of
+// the rest of the suite quietly.
+//
+// Set DSM_ACC_FIREWALL=1 only against a NAS you can reach by console.
+func TestAccPreCheckFirewall(t *testing.T) {
+	TestAccPreCheck(t)
+	if os.Getenv("DSM_ACC_FIREWALL") != "1" {
+		t.Skip("skipping firewall test: it reconfigures the live DSM firewall and can lock the runner out of the NAS; set DSM_ACC_FIREWALL=1 to opt in")
+	}
+}
+
 // NewTestClient builds a logged-in DSM client from the acceptance-test
 // environment. Use it in CheckDestroy hooks that need to inspect DSM directly,
 // beyond what the Terraform state can tell.

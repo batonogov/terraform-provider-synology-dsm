@@ -192,6 +192,7 @@ func (p *synologyProvider) Resources(_ context.Context) []func() resource.Resour
 		NewFileResource,
 		NewSystemSettingsResource,
 		NewReverseProxyResource,
+		NewFirewallResource,
 		NewFirewallRuleResource,
 		NewScheduledTaskResource,
 		NewEventTaskResource,
