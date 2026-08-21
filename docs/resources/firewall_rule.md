@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages one rule in a Synology DSM firewall profile.
   DSM evaluates a profile's rules top to bottom and stops at the first match, so the order of rules is the policy. This resource therefore requires an explicit priority, which is the rule's zero-based position in the profile's list.
+  Rules created in the same apply end up in priority order regardless of the order Terraform writes them, and rules created outside Terraform keep their relative order and fill the positions no managed rule claims. depends_on between rules is not needed.
   ~> The firewall can lock you out. Before every write the provider replays the resulting rule set against its own DSM session and refuses the change if that session would be denied. Set allow_lockout = true to override. Deleting the last rule of an enabled profile is refused for the same reason; override with allow_empty_rule_set = true.
   ~> The DSM firewall API is undocumented. This resource was written against reverse-engineered field names and has not been verified against physical hardware; see the provider README before using it on a NAS you cannot reach physically.
 ---
@@ -14,6 +15,8 @@ description: |-
 Manages one rule in a Synology DSM firewall profile.
 
 DSM evaluates a profile's rules top to bottom and stops at the first match, so the order of rules *is* the policy. This resource therefore requires an explicit `priority`, which is the rule's zero-based position in the profile's list.
+
+Rules created in the same apply end up in priority order regardless of the order Terraform writes them, and rules created outside Terraform keep their relative order and fill the positions no managed rule claims. `depends_on` between rules is not needed.
 
 ~> **The firewall can lock you out.** Before every write the provider replays the resulting rule set against its own DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. Deleting the last rule of an enabled profile is refused for the same reason; override with `allow_empty_rule_set = true`.
 
@@ -25,6 +28,13 @@ DSM evaluates a profile's rules top to bottom and stops at the first match, so t
 # Rules are matched top to bottom and the first match wins, so `priority` is the
 # policy. Keep the allow rules above the catch-all deny, and keep the rule that
 # lets Terraform reach DSM above everything.
+#
+# The three rules below are independent resources, so Terraform creates them
+# concurrently and in no particular order. It does not matter: every write lays
+# the whole list out from the configured priorities, so the profile ends up in
+# the order written here. No depends_on between rules is needed. Number them
+# contiguously from 0 within a profile and adapter — a priority past the end of
+# the list cannot be honoured, and refreshing reports the actual position.
 
 resource "dsm_firewall_rule" "dsm_admin_from_vpn" {
   profile = "default"
@@ -72,7 +82,7 @@ resource "dsm_firewall_rule" "deny_everything_else" {
 
 - `action` (String) What to do with matching traffic: allow or deny.
 - `name` (String) Rule name. DSM shows this in the Description column, and this provider uses it as the rule's identity within a profile and adapter, so it must be unique there.
-- `priority` (Number) Zero-based position of the rule in the profile's list. Lower numbers are evaluated first. Reading the rule reports its actual position, so a reordering done outside Terraform shows up as a diff.
+- `priority` (Number) Zero-based position of the rule in the profile's list. Lower numbers are evaluated first. Every write lays out the whole list from the configured priorities, so rules created in one apply end up in priority order however Terraform schedules them — no depends_on required. Number the rules of one profile and adapter contiguously from 0, counting any rules created outside Terraform: a priority past the end of the list cannot be honoured, and reading the rule reports its actual position, so both that and a reordering done in DSM show up as a diff.
 
 ### Optional
 

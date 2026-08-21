@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -52,6 +51,9 @@ func (r *firewallRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 		MarkdownDescription: "Manages one rule in a Synology DSM firewall profile.\n\n" +
 			"DSM evaluates a profile's rules top to bottom and stops at the first match, so the order of rules *is* the policy. " +
 			"This resource therefore requires an explicit `priority`, which is the rule's zero-based position in the profile's list.\n\n" +
+			"Rules created in the same apply end up in priority order regardless of the order Terraform writes them, and rules " +
+			"created outside Terraform keep their relative order and fill the positions no managed rule claims. `depends_on` " +
+			"between rules is not needed.\n\n" +
 			"~> **The firewall can lock you out.** Before every write the provider replays the resulting rule set against its own " +
 			"DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. " +
 			"Deleting the last rule of an enabled profile is refused for the same reason; override with `allow_empty_rule_set = true`.\n\n" +
@@ -96,7 +98,11 @@ func (r *firewallRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 			"priority": schema.Int64Attribute{
 				Required: true,
 				Description: "Zero-based position of the rule in the profile's list. Lower numbers are evaluated first. " +
-					"Reading the rule reports its actual position, so a reordering done outside Terraform shows up as a diff.",
+					"Every write lays out the whole list from the configured priorities, so rules created in one apply end up " +
+					"in priority order however Terraform schedules them — no depends_on required. Number the rules of one " +
+					"profile and adapter contiguously from 0, counting any rules created outside Terraform: a priority past " +
+					"the end of the list cannot be honoured, and reading the rule reports its actual position, so both that " +
+					"and a reordering done in DSM show up as a diff.",
 			},
 			"action": schema.StringAttribute{
 				Required:    true,
@@ -298,6 +304,7 @@ func (r *firewallRuleResource) write(ctx context.Context, plan *firewallRuleReso
 		return
 	}
 	appendLockoutWarning(diags, result.LockoutWarning)
+	appendOrderConflictWarning(diags, result.OrderConflict)
 
 	plan.ID = types.StringValue(client.BuildFirewallRuleID(
 		plan.Profile.ValueString(),
@@ -306,18 +313,9 @@ func (r *firewallRuleResource) write(ctx context.Context, plan *firewallRuleReso
 	))
 
 	// Priority in state stays as planned — returning the achieved index here
-	// would be an inconsistent-result error from Terraform. Instead the gap is
-	// reported, and the next refresh turns it into an ordinary diff.
-	if int64(result.Rule.Priority) != plan.Priority.ValueInt64() {
-		diags.AddWarning(
-			"Firewall rule order has not settled",
-			fmt.Sprintf(
-				"Rule %q asked for priority %d but landed at position %d, because the profile did not yet have that many rules. "+
-					"The effective policy is the position, not the configured priority. Run terraform apply again to move it "+
-					"into place, or add depends_on between rules so they are created in priority order.",
-				plan.Name.ValueString(), plan.Priority.ValueInt64(), result.Rule.Priority),
-		)
-	}
+	// would be an inconsistent-result error from Terraform. The next refresh
+	// reports the actual position, so a priority the profile is too short to
+	// honour turns into an ordinary diff instead of a silent surprise.
 }
 
 func (r *firewallRuleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -379,6 +377,25 @@ func appendLockoutWarning(diags *diag.Diagnostics, warning *client.Indeterminate
 			"\n\nThe change was applied anyway, because the uncertainty comes from a rule this provider does not model "+
 			"(a GeoIP or application-preset rule, typically) rather than from the change itself. Confirm you can still "+
 			"reach DSM before closing this session.",
+	)
+}
+
+// appendOrderConflictWarning reports two rules configured for the same position.
+//
+// The provider places rules by their configured priority rather than by the
+// order Terraform happens to write them, which makes the resulting policy
+// reproducible — but two rules cannot share one position, and for a firewall
+// "below" is a different policy, so the tie is named rather than resolved out
+// of sight.
+func appendOrderConflictWarning(diags *diag.Diagnostics, conflict *client.FirewallOrderConflict) {
+	if conflict == nil {
+		return
+	}
+	diags.AddWarning(
+		"Two firewall rules are configured with the same priority",
+		conflict.Error()+
+			"\n\nDSM matches rules top to bottom and stops at the first match, so which of the two comes first is a policy "+
+			"decision this configuration has not made. Give each rule of a profile and adapter its own priority.",
 	)
 }
 

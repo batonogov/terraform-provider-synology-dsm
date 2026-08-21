@@ -1,6 +1,13 @@
 # Rules are matched top to bottom and the first match wins, so `priority` is the
 # policy. Keep the allow rules above the catch-all deny, and keep the rule that
 # lets Terraform reach DSM above everything.
+#
+# The three rules below are independent resources, so Terraform creates them
+# concurrently and in no particular order. It does not matter: every write lays
+# the whole list out from the configured priorities, so the profile ends up in
+# the order written here. No depends_on between rules is needed. Number them
+# contiguously from 0 within a profile and adapter — a priority past the end of
+# the list cannot be honoured, and refreshing reports the actual position.
 
 resource "dsm_firewall_rule" "dsm_admin_from_vpn" {
   profile = "default"
