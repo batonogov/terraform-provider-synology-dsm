@@ -307,8 +307,33 @@ func (c *Client) GetFirewallProfile(ctx context.Context, name string) (*Firewall
 	return profile, nil
 }
 
+// FirewallRulePlacement is one rule together with the length of the list it sits
+// in.
+//
+// The length is not decoration: a priority is a position, so a rule configured
+// for position 7 in a list of three has asked for something the profile cannot
+// express. Without the count that is indistinguishable from an ordinary
+// reordering, and a caller can only report the position it found — which reads
+// as drift that another apply will fix, and it will not.
+type FirewallRulePlacement struct {
+	Rule *FirewallRule
+	// RuleCount is the number of rules in this profile and adapter, so the last
+	// position available is RuleCount-1.
+	RuleCount int
+}
+
 // GetFirewallRule returns one rule by profile, adapter and name.
 func (c *Client) GetFirewallRule(ctx context.Context, profileName, adapter, name string) (*FirewallRule, error) {
+	placement, err := c.GetFirewallRulePlacement(ctx, profileName, adapter, name)
+	if err != nil {
+		return nil, err
+	}
+	return placement.Rule, nil
+}
+
+// GetFirewallRulePlacement returns one rule along with the size of the list it
+// belongs to. Both come out of the same profile read, so it costs no extra call.
+func (c *Client) GetFirewallRulePlacement(ctx context.Context, profileName, adapter, name string) (*FirewallRulePlacement, error) {
 	profile, err := c.GetFirewallProfile(ctx, profileName)
 	if err != nil {
 		return nil, err
@@ -317,7 +342,7 @@ func (c *Client) GetFirewallRule(ctx context.Context, profileName, adapter, name
 	rules := profile.Rules[adapter]
 	for i := range rules {
 		if rules[i].Name == name {
-			return &rules[i], nil
+			return &FirewallRulePlacement{Rule: &rules[i], RuleCount: len(rules)}, nil
 		}
 	}
 	return nil, fmt.Errorf("firewall rule %q not found in profile %q adapter %q", name, profileName, adapter)
@@ -369,11 +394,16 @@ func (c *Client) SetFirewallRule(ctx context.Context, req SetFirewallRuleRequest
 		return nil, err
 	}
 
-	// Recorded before the layout, because the layout is computed from the record.
-	// A refused or failed write leaves the entry behind, which is harmless: the
-	// layout ignores names that are not in the list it is arranging.
-	c.rememberFirewallPriority(req.Profile, req.Adapter, req.Rule.Name, req.Rule.Priority)
+	// The layout is computed from the record plus this rule, but the record
+	// itself is only updated once the write has landed. A refused or failed write
+	// must leave nothing behind: for a rule that already exists in DSM — created
+	// by an earlier apply, and so unmanaged in this process — recording the new
+	// priority up front would promote it to managed, and the next write of any
+	// *other* rule would then lay the list out using a position that was never
+	// accepted. Part of a rejected change would arrive later through somebody
+	// else's write, which is not what "nothing was written" means.
 	desired := c.firewallPriorities(req.Profile, req.Adapter)
+	desired[req.Rule.Name] = normalizeFirewallPriority(req.Rule.Priority)
 
 	after := before.clone()
 	after.Rules[req.Adapter] = arrangeFirewallRules(
@@ -387,6 +417,9 @@ func (c *Client) SetFirewallRule(ctx context.Context, req SetFirewallRuleRequest
 	if err := c.writeFirewallProfile(ctx, after, settings); err != nil {
 		return nil, fmt.Errorf("set firewall rule %q in profile %q: %w", req.Rule.Name, req.Profile, err)
 	}
+
+	// The position is now DSM's, so it becomes the provider's to maintain.
+	c.rememberFirewallPriority(req.Profile, req.Adapter, req.Rule.Name, req.Rule.Priority)
 
 	for _, rule := range after.Rules[req.Adapter] {
 		if rule.Name == req.Rule.Name {
@@ -408,12 +441,20 @@ func (c *Client) SetFirewallRule(ctx context.Context, req SetFirewallRuleRequest
 	return nil, fmt.Errorf("firewall rule %q missing from the profile just written", req.Rule.Name)
 }
 
-// rememberFirewallPriority records the position a rule was configured to take.
-// Callers must hold c.mu.
-func (c *Client) rememberFirewallPriority(profile, adapter, name string, priority int) {
+// normalizeFirewallPriority folds a nonsensical priority onto the first position
+// rather than rejecting it, so the record and the layout always agree on what a
+// given request meant.
+func normalizeFirewallPriority(priority int) int {
 	if priority < 0 {
-		priority = 0
+		return 0
 	}
+	return priority
+}
+
+// rememberFirewallPriority records the position a rule was configured to take.
+// Callers must hold c.mu, and must only call it for a write DSM has accepted.
+func (c *Client) rememberFirewallPriority(profile, adapter, name string, priority int) {
+	priority = normalizeFirewallPriority(priority)
 	if c.firewallRuleOrder == nil {
 		c.firewallRuleOrder = map[string]map[string]map[string]int{}
 	}

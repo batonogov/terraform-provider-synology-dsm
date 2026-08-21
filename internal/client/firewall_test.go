@@ -363,6 +363,92 @@ func TestClient_SetFirewallRule_KeepsUnmanagedRulesInOrder(t *testing.T) {
 	}
 }
 
+// TestClient_SetFirewallRule_RefusedWriteLeavesNoTrace covers the other half of
+// "nothing was written": a refused write must not influence a later one either.
+//
+// The layout is computed from the priorities this client has recorded, so the
+// record may only be updated once DSM has accepted the write. A rule that
+// already exists — created by an earlier apply, and so unmanaged in this
+// process — would otherwise be promoted to managed by the very write that was
+// rejected, and the next write of any other rule would move it to the position
+// the rejected change asked for. Part of a refused change would then arrive
+// through somebody else's write.
+func TestClient_SetFirewallRule_RefusedWriteLeavesNoTrace(t *testing.T) {
+	c, fixture, server := newFirewallFixture(t, true, map[string][]map[string]interface{}{
+		"eth0": {
+			allowAllRule("baseline allow"),
+			{
+				"name": "vpn only", "enable": true,
+				"policy": float64(fwPolicyAllow), "protocol": float64(fwProtoTCP),
+				"ipGroup": float64(fwIPGroupNetmask), "ipList": []interface{}{"10.210.0.0", "255.255.0.0"},
+				"portGroup": float64(fwPortGroupAll), "portList": []interface{}{},
+				"ruleIndex": float64(2),
+			},
+		},
+	})
+	defer server.Close()
+
+	writesBefore := fixture.sets.Load()
+
+	// Refused: turning the rule that keeps this session reachable into a deny
+	// would lock the provider out. It also asks to move that rule to the end.
+	_, err := setRule(t, c, "eth0", FirewallRule{
+		Name: "baseline allow", Enabled: true, Action: FirewallActionDeny,
+		Protocol: FirewallProtocolAll, Priority: 2,
+	}, false)
+	var lockout *LockoutError
+	if !errors.As(err, &lockout) {
+		t.Fatalf("expected *LockoutError, got %v", err)
+	}
+	if fixture.sets.Load() != writesBefore {
+		t.Fatalf("a refused write still saved the profile")
+	}
+	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, []string{"baseline allow", "vpn only"}) {
+		t.Fatalf("order after the refusal = %v, want it untouched", got)
+	}
+
+	// An unrelated rule is written next. It must lay the list out from the two
+	// rules DSM actually holds — neither of which this client has written — so
+	// "baseline allow" keeps the position DSM has for it.
+	if _, err := setRule(t, c, "eth0", orderRule("newcomer", 0), false); err != nil {
+		t.Fatalf("set newcomer: %v", err)
+	}
+
+	want := []string{"newcomer", "baseline allow", "vpn only"}
+	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, want) {
+		t.Errorf("order = %v, want %v — the refused priority leaked into a later write", got, want)
+	}
+}
+
+// The list length travels with the rule so a caller can tell "priority 7 in a
+// list of three" from an ordinary reordering. It comes from the profile read the
+// lookup already does, so it costs no extra call.
+func TestClient_GetFirewallRulePlacement(t *testing.T) {
+	c, _, server := newFirewallFixture(t, false, nil)
+	defer server.Close()
+
+	for i, name := range []string{"first", "second", "third"} {
+		if _, err := setRule(t, c, "eth0", orderRule(name, i), false); err != nil {
+			t.Fatalf("set %q: %v", name, err)
+		}
+	}
+
+	placement, err := c.GetFirewallRulePlacement(context.Background(), "default", "eth0", "second")
+	if err != nil {
+		t.Fatalf("GetFirewallRulePlacement: %v", err)
+	}
+	if placement.RuleCount != 3 {
+		t.Errorf("rule count = %d, want 3", placement.RuleCount)
+	}
+	if placement.Rule.Priority != 1 {
+		t.Errorf("priority = %d, want the actual index 1", placement.Rule.Priority)
+	}
+
+	if _, err := c.GetFirewallRulePlacement(context.Background(), "default", "eth0", "absent"); err == nil {
+		t.Error("a missing rule must be an error, not an empty placement")
+	}
+}
+
 // TestClient_SetFirewallRule_ReportsPriorityCollision covers the one case the
 // layout cannot honour: two rules configured for the same position. One of them
 // necessarily ends up under the other, and under a deny rule is a different
