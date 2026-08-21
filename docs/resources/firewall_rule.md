@@ -5,7 +5,8 @@ subcategory: ""
 description: |-
   Manages one rule in a Synology DSM firewall profile.
   DSM evaluates a profile's rules top to bottom and stops at the first match, so the order of rules is the policy. This resource therefore requires an explicit priority, which is the rule's zero-based position in the profile's list.
-  Rules created in the same apply end up in priority order regardless of the order Terraform writes them, and rules created outside Terraform keep their relative order and fill the positions no managed rule claims. depends_on between rules is not needed.
+  Rules created in the same apply end up in priority order regardless of the order Terraform writes them, so depends_on between rules is not needed.
+  ~> Managed rules take their positions first. Rules created in the DSM UI are never reordered against each other and keep everything this provider does not model, but they fill the positions no managed rule claims — so a rule managed here with priority = 0 moves a hand-written rule at the top of the list down one. For a firewall that is a change of policy, not of presentation: check the resulting order in DSM after the first apply against a profile you did not create from Terraform.
   ~> The firewall can lock you out. Before every write the provider replays the resulting rule set against its own DSM session and refuses the change if that session would be denied. Set allow_lockout = true to override. Deleting the last rule of an enabled profile is refused for the same reason; override with allow_empty_rule_set = true.
   ~> The DSM firewall API is undocumented. This resource was written against reverse-engineered field names and has not been verified against physical hardware; see the provider README before using it on a NAS you cannot reach physically.
 ---
@@ -16,7 +17,9 @@ Manages one rule in a Synology DSM firewall profile.
 
 DSM evaluates a profile's rules top to bottom and stops at the first match, so the order of rules *is* the policy. This resource therefore requires an explicit `priority`, which is the rule's zero-based position in the profile's list.
 
-Rules created in the same apply end up in priority order regardless of the order Terraform writes them, and rules created outside Terraform keep their relative order and fill the positions no managed rule claims. `depends_on` between rules is not needed.
+Rules created in the same apply end up in priority order regardless of the order Terraform writes them, so `depends_on` between rules is not needed.
+
+~> **Managed rules take their positions first.** Rules created in the DSM UI are never reordered against each other and keep everything this provider does not model, but they fill the positions no managed rule claims — so a rule managed here with `priority = 0` moves a hand-written rule at the top of the list down one. For a firewall that is a change of policy, not of presentation: check the resulting order in DSM after the first apply against a profile you did not create from Terraform.
 
 ~> **The firewall can lock you out.** Before every write the provider replays the resulting rule set against its own DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. Deleting the last rule of an enabled profile is refused for the same reason; override with `allow_empty_rule_set = true`.
 
