@@ -166,6 +166,45 @@ type DeleteFirewallRuleOptions struct {
 type FirewallWriteResult struct {
 	Rule           *FirewallRule
 	LockoutWarning *IndeterminateLockoutError
+	// OrderConflict is set when two rules of the same profile and adapter were
+	// configured with the same priority. Both cannot occupy one position, so one
+	// of them silently ends up under the other — and for a firewall, under is a
+	// different policy.
+	OrderConflict *FirewallOrderConflict
+}
+
+// FirewallOrderConflict reports that several rules this provider manages were
+// configured with the same priority in the same profile and adapter.
+//
+// Position is the only thing DSM has that expresses precedence, so a tie has to
+// be broken somehow. It is broken by rule name, which is at least the same on
+// every run — but it is a guess at what the configuration meant, and a rule that
+// ends up below a deny rule never matches, so the guess is reported rather than
+// made quietly.
+type FirewallOrderConflict struct {
+	Profile  string
+	Adapter  string
+	Rule     string
+	Priority int
+	// Index is where the rule actually ended up.
+	Index int
+	// Tied names the other rules configured with the same priority, sorted.
+	Tied []string
+}
+
+func (e *FirewallOrderConflict) Error() string {
+	return fmt.Sprintf(
+		"firewall rule %q shares priority %d with %s in profile %q adapter %q; DSM stores precedence as position, so the tie "+
+			"was broken by rule name and %q ended up at position %d",
+		e.Rule, e.Priority, strings.Join(quoteAll(e.Tied), ", "), e.Profile, e.Adapter, e.Rule, e.Index)
+}
+
+func quoteAll(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = fmt.Sprintf("%q", v)
+	}
+	return out
 }
 
 // LockoutError reports a refused write: replaying the resulting profile said
@@ -286,12 +325,22 @@ func (c *Client) GetFirewallRule(ctx context.Context, profileName, adapter, name
 
 // SetFirewallRule inserts or replaces one rule and writes the whole profile back.
 //
-// Ordering: the rule is placed at index Rule.Priority within its adapter's list.
-// Position is the only thing DSM has that expresses priority, so writing it
-// explicitly is what keeps an apply from quietly reshuffling policy. When
-// Priority is past the end of the list the rule is appended and the achieved
-// index is returned, so the caller can say the order has not settled rather than
-// pretend it has.
+// Ordering: the write does not merely place this one rule, it lays out the whole
+// adapter list. Every rule this client has written during the life of the process
+// is put at the position its own configuration asked for, and the rules the
+// provider has never written — created in the DSM UI, or by an earlier apply —
+// keep their relative order and fill the slots that are left. Position is the
+// only thing DSM has that expresses priority, and Terraform creates independent
+// resources concurrently and in arbitrary order: placing just the rule at hand
+// would clamp it to the end of whichever list happened to exist at that moment,
+// so five rules created in one apply would settle in scheduling order rather than
+// in priority order (issue #122). Laying out the whole list makes each write
+// idempotent with respect to order, so the final write of an apply always leaves
+// the configured order behind whatever order the writes arrived in.
+//
+// A priority past the end of the list still clamps — there is no position 7 in a
+// list of three — but the rules that are present keep their configured order, and
+// the achieved index is returned so Read can turn the gap into an ordinary diff.
 //
 // The whole read-modify-write runs under c.mu, the same lock share permissions
 // and quotas take. Terraform applies resources in parallel by default; without
@@ -320,8 +369,15 @@ func (c *Client) SetFirewallRule(ctx context.Context, req SetFirewallRuleRequest
 		return nil, err
 	}
 
+	// Recorded before the layout, because the layout is computed from the record.
+	// A refused or failed write leaves the entry behind, which is harmless: the
+	// layout ignores names that are not in the list it is arranging.
+	c.rememberFirewallPriority(req.Profile, req.Adapter, req.Rule.Name, req.Rule.Priority)
+	desired := c.firewallPriorities(req.Profile, req.Adapter)
+
 	after := before.clone()
-	after.Rules[req.Adapter] = insertFirewallRule(after.Rules[req.Adapter], req.Rule)
+	after.Rules[req.Adapter] = arrangeFirewallRules(
+		upsertFirewallRule(after.Rules[req.Adapter], req.Rule), desired)
 
 	warning, err := c.guardFirewallLockout(before, after, settings, req.AllowLockout)
 	if err != nil {
@@ -335,10 +391,89 @@ func (c *Client) SetFirewallRule(ctx context.Context, req SetFirewallRuleRequest
 	for _, rule := range after.Rules[req.Adapter] {
 		if rule.Name == req.Rule.Name {
 			written := rule
-			return &FirewallWriteResult{Rule: &written, LockoutWarning: warning}, nil
+			result := &FirewallWriteResult{Rule: &written, LockoutWarning: warning}
+			if tied := firewallPriorityTies(after.Rules[req.Adapter], desired, req.Rule.Name); len(tied) > 0 {
+				result.OrderConflict = &FirewallOrderConflict{
+					Profile:  req.Profile,
+					Adapter:  req.Adapter,
+					Rule:     req.Rule.Name,
+					Priority: desired[req.Rule.Name],
+					Index:    written.Priority,
+					Tied:     tied,
+				}
+			}
+			return result, nil
 		}
 	}
 	return nil, fmt.Errorf("firewall rule %q missing from the profile just written", req.Rule.Name)
+}
+
+// rememberFirewallPriority records the position a rule was configured to take.
+// Callers must hold c.mu.
+func (c *Client) rememberFirewallPriority(profile, adapter, name string, priority int) {
+	if priority < 0 {
+		priority = 0
+	}
+	if c.firewallRuleOrder == nil {
+		c.firewallRuleOrder = map[string]map[string]map[string]int{}
+	}
+	adapters, ok := c.firewallRuleOrder[profile]
+	if !ok {
+		adapters = map[string]map[string]int{}
+		c.firewallRuleOrder[profile] = adapters
+	}
+	rules, ok := adapters[adapter]
+	if !ok {
+		rules = map[string]int{}
+		adapters[adapter] = rules
+	}
+	rules[name] = priority
+}
+
+// forgetFirewallPriority drops a rule from the record, so a deleted rule stops
+// influencing the layout of the ones that remain. Callers must hold c.mu.
+func (c *Client) forgetFirewallPriority(profile, adapter, name string) {
+	if adapters, ok := c.firewallRuleOrder[profile]; ok {
+		if rules, ok := adapters[adapter]; ok {
+			delete(rules, name)
+		}
+	}
+}
+
+// firewallPriorities copies the record for one profile and adapter. Callers must
+// hold c.mu; the copy is what keeps the layout functions free of the lock.
+func (c *Client) firewallPriorities(profile, adapter string) map[string]int {
+	out := map[string]int{}
+	for name, priority := range c.firewallRuleOrder[profile][adapter] {
+		out[name] = priority
+	}
+	return out
+}
+
+// firewallPriorityTies lists the other rules present in the list that were
+// configured with the same priority as name.
+//
+// Detected from the configured priorities rather than from "the rule did not
+// land where it asked", because only one side of a tie is displaced: of two
+// rules that both ask for position 0 one of them does get position 0, and if
+// that is the rule being written the collision would otherwise go unreported.
+func firewallPriorityTies(rules []FirewallRule, desired map[string]int, name string) []string {
+	priority, ok := desired[name]
+	if !ok {
+		return nil
+	}
+
+	var tied []string
+	for _, rule := range rules {
+		if rule.Name == name {
+			continue
+		}
+		if other, ok := desired[rule.Name]; ok && other == priority {
+			tied = append(tied, rule.Name)
+		}
+	}
+	sort.Strings(tied)
+	return tied
 }
 
 // DeleteFirewallRule removes one rule by name, refusing by default both a write
@@ -368,7 +503,10 @@ func (c *Client) DeleteFirewallRule(ctx context.Context, profileName, adapter, n
 		// Already gone. Nothing to write, and nothing to guard against.
 		return &FirewallWriteResult{}, nil
 	}
-	reindexFirewallRules(remaining)
+	// The rule stops counting towards the layout the moment it stops existing;
+	// leaving it in the record would reserve a position for a rule that is gone.
+	c.forgetFirewallPriority(profileName, adapter, name)
+	remaining = arrangeFirewallRules(remaining, c.firewallPriorities(profileName, adapter))
 
 	after := before.clone()
 	after.Rules[adapter] = remaining
@@ -656,11 +794,13 @@ func parseFirewallTaskID(raw json.RawMessage) string {
 	return result.TaskID
 }
 
-// insertFirewallRule returns rules with rule inserted at rule.Priority, first
-// removing any existing rule of the same name. Positions are renumbered so every
-// rule's Priority always agrees with where it actually sits.
-func insertFirewallRule(rules []FirewallRule, rule FirewallRule) []FirewallRule {
-	filtered := make([]FirewallRule, 0, len(rules)+1)
+// upsertFirewallRule returns rules with rule replacing any existing entry of the
+// same name, or appended when there is none. Where it lands is not decided here:
+// arrangeFirewallRules positions the whole list afterwards. Appending is what
+// keeps this step from disturbing the relative order of the rules the provider
+// does not manage.
+func upsertFirewallRule(rules []FirewallRule, rule FirewallRule) []FirewallRule {
+	out := make([]FirewallRule, 0, len(rules)+1)
 	for _, existing := range rules {
 		if existing.Name == rule.Name {
 			// Carry over the wire fields of the rule being replaced so selectors
@@ -670,23 +810,83 @@ func insertFirewallRule(rules []FirewallRule, rule FirewallRule) []FirewallRule 
 			}
 			continue
 		}
-		filtered = append(filtered, existing)
+		out = append(out, existing)
+	}
+	return append(out, rule)
+}
+
+// arrangeFirewallRules lays out one adapter's rule list from the priorities the
+// provider was asked for, and returns it renumbered so every rule's Priority
+// agrees with where it actually sits.
+//
+// The layout is a function of (list contents, desired priorities) alone — never
+// of the order the writes arrived in. That is the whole point: Terraform writes
+// independent resources concurrently, so anything that depends on arrival order
+// makes the resulting policy depend on scheduling.
+//
+// Two properties hold and both are load-bearing:
+//
+//   - A rule the provider has written takes the lowest free position at or after
+//     its configured priority, so with distinct priorities every managed rule
+//     lands exactly on its number, and their relative order always matches the
+//     configuration even when the list is too short for the numbers themselves.
+//   - Rules the provider has never written — created in the DSM UI, or by an
+//     earlier apply — are never reordered among themselves. They fill the
+//     positions no managed rule claims, in the order DSM returned them.
+//
+// Equal priorities are broken by rule name so the result stays stable across
+// runs; the caller reports that tie rather than resolving it silently.
+func arrangeFirewallRules(rules []FirewallRule, desired map[string]int) []FirewallRule {
+	type placed struct {
+		rule     FirewallRule
+		priority int
 	}
 
-	at := rule.Priority
-	if at < 0 {
-		at = 0
-	}
-	if at > len(filtered) {
-		at = len(filtered)
+	managed := make([]placed, 0, len(rules))
+	unmanaged := make([]FirewallRule, 0, len(rules))
+	for _, rule := range rules {
+		if priority, ok := desired[rule.Name]; ok {
+			managed = append(managed, placed{rule: rule, priority: priority})
+			continue
+		}
+		unmanaged = append(unmanaged, rule)
 	}
 
-	filtered = append(filtered, FirewallRule{})
-	copy(filtered[at+1:], filtered[at:])
-	filtered[at] = rule
+	if len(managed) == 0 {
+		out := make([]FirewallRule, len(rules))
+		copy(out, rules)
+		reindexFirewallRules(out)
+		return out
+	}
 
-	reindexFirewallRules(filtered)
-	return filtered
+	sort.SliceStable(managed, func(i, j int) bool {
+		if managed[i].priority != managed[j].priority {
+			return managed[i].priority < managed[j].priority
+		}
+		return managed[i].rule.Name < managed[j].rule.Name
+	})
+
+	out := make([]FirewallRule, 0, len(rules))
+	next, other := 0, 0
+	for slot := range rules {
+		switch {
+		case next < len(managed) && managed[next].priority <= slot:
+			out = append(out, managed[next].rule)
+			next++
+		case other < len(unmanaged):
+			out = append(out, unmanaged[other])
+			other++
+		default:
+			// Only reached when the remaining managed rules ask for positions past
+			// the end of the list. They keep their relative order and take the
+			// last slots; the caller sees the achieved index.
+			out = append(out, managed[next].rule)
+			next++
+		}
+	}
+
+	reindexFirewallRules(out)
+	return out
 }
 
 func reindexFirewallRules(rules []FirewallRule) {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -216,50 +217,186 @@ func TestClient_GetFirewallProfile(t *testing.T) {
 	}
 }
 
+// orderRule is a minimal valid rule; the ordering tests care about names and
+// priorities only.
+func orderRule(name string, priority int) FirewallRule {
+	return FirewallRule{
+		Name: name, Enabled: true, Action: FirewallActionAllow,
+		Protocol: FirewallProtocolTCP, Priority: priority,
+	}
+}
+
 // TestClient_SetFirewallRule_Order is the ordering contract: a rule lands at the
-// index its priority names, and inserting into the middle pushes the rest down
-// rather than overwriting them. Order is the policy for a firewall, so this is a
+// index its priority names, and a rule that moves is removed from its old slot
+// rather than duplicated. Order is the policy for a firewall, so this is a
 // correctness test, not a cosmetic one.
 func TestClient_SetFirewallRule_Order(t *testing.T) {
 	c, _, server := newFirewallFixture(t, false, nil)
 	defer server.Close()
 
-	for i, name := range []string{"first", "second", "third"} {
-		if _, err := setRule(t, c, "eth0", FirewallRule{
-			Name: name, Enabled: true, Action: FirewallActionAllow,
-			Protocol: FirewallProtocolTCP, Priority: i,
-		}, false); err != nil {
-			t.Fatalf("set %q: %v", name, err)
+	// Deliberately not written in priority order: the result must not depend on
+	// the order Terraform happens to call in.
+	for _, rule := range []FirewallRule{
+		orderRule("second", 1),
+		orderRule("third", 2),
+		orderRule("first", 0),
+	} {
+		if _, err := setRule(t, c, "eth0", rule, false); err != nil {
+			t.Fatalf("set %q: %v", rule.Name, err)
 		}
 	}
 
 	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, []string{"first", "second", "third"}) {
-		t.Fatalf("order after appends = %v, want [first second third]", got)
+		t.Fatalf("order after writes = %v, want [first second third]", got)
 	}
 
-	// Insert at the front: everything else must shift, nothing may be lost.
-	if _, err := setRule(t, c, "eth0", FirewallRule{
-		Name: "zeroth", Enabled: true, Action: FirewallActionDeny,
-		Protocol: FirewallProtocolTCP, Priority: 0,
-	}, false); err != nil {
-		t.Fatalf("set zeroth: %v", err)
+	// Reordering the configuration renumbers the rules it moves past, and
+	// Terraform updates them in whatever order it likes.
+	for _, rule := range []FirewallRule{
+		orderRule("second", 2),
+		orderRule("third", 0),
+		orderRule("first", 1),
+	} {
+		if _, err := setRule(t, c, "eth0", rule, false); err != nil {
+			t.Fatalf("reorder %q: %v", rule.Name, err)
+		}
 	}
 
-	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, []string{"zeroth", "first", "second", "third"}) {
-		t.Fatalf("order after front insert = %v, want [zeroth first second third]", got)
+	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, []string{"third", "first", "second"}) {
+		t.Fatalf("order after reorder = %v, want [third first second]", got)
+	}
+}
+
+// TestClient_SetFirewallRule_OrderIndependentOfArrival is the regression test for
+// issue #122. Terraform creates independent resources concurrently and in
+// arbitrary order; the resulting policy must not depend on which order that was.
+//
+// Every arrival permutation of the same five rules has to leave the same list
+// behind. Before the fix each write only placed its own rule and clamped it to
+// the end of the list that existed at that moment, so the descending permutation
+// alone produced [0 4 1 3 2] — a configuration whose rules 1..4 all sit in the
+// wrong half of the policy, with nothing said about it.
+func TestClient_SetFirewallRule_OrderIndependentOfArrival(t *testing.T) {
+	names := []string{"p0", "p1", "p2", "p3", "p4"}
+
+	for _, arrival := range permutations([]int{0, 1, 2, 3, 4}) {
+		t.Run(fmt.Sprint(arrival), func(t *testing.T) {
+			c, _, server := newFirewallFixture(t, false, nil)
+			defer server.Close()
+
+			for _, priority := range arrival {
+				if _, err := setRule(t, c, "eth0", orderRule(names[priority], priority), false); err != nil {
+					t.Fatalf("set %q: %v", names[priority], err)
+				}
+			}
+
+			if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, names) {
+				t.Errorf("order = %v, want %v", got, names)
+			}
+		})
+	}
+}
+
+// permutations returns every ordering of values, so the ordering test can assert
+// a property rather than one lucky sequence.
+func permutations(values []int) [][]int {
+	if len(values) <= 1 {
+		return [][]int{append([]int(nil), values...)}
 	}
 
-	// Move an existing rule: it is removed from its old slot before being placed,
-	// so it must appear exactly once.
-	if _, err := setRule(t, c, "eth0", FirewallRule{
-		Name: "third", Enabled: true, Action: FirewallActionAllow,
-		Protocol: FirewallProtocolTCP, Priority: 1,
-	}, false); err != nil {
-		t.Fatalf("move third: %v", err)
+	var out [][]int
+	for i := range values {
+		rest := make([]int, 0, len(values)-1)
+		rest = append(rest, values[:i]...)
+		rest = append(rest, values[i+1:]...)
+		for _, tail := range permutations(rest) {
+			out = append(out, append([]int{values[i]}, tail...))
+		}
+	}
+	return out
+}
+
+// TestClient_SetFirewallRule_KeepsUnmanagedRulesInOrder covers the other half of
+// the layout: rules this provider never wrote — created in the DSM UI, or by an
+// earlier apply — keep their relative order and their unmodelled fields. They
+// fill the positions no managed rule claims; they are never sorted, renamed, or
+// rebuilt.
+func TestClient_SetFirewallRule_KeepsUnmanagedRulesInOrder(t *testing.T) {
+	manual := func(name string, index int) map[string]interface{} {
+		rule := allowAllRule(name)
+		rule["ruleIndex"] = float64(index)
+		rule["labelList"] = []interface{}{"manual-" + name}
+		return rule
 	}
 
-	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, []string{"zeroth", "third", "first", "second"}) {
-		t.Fatalf("order after move = %v, want [zeroth third first second]", got)
+	c, fixture, server := newFirewallFixture(t, false, map[string][]map[string]interface{}{
+		"eth0": {manual("ui-a", 7), manual("ui-b", 8), manual("ui-c", 9)},
+	})
+	defer server.Close()
+
+	// Written back to front, and asking for positions between the manual rules.
+	for _, rule := range []FirewallRule{orderRule("tf-web", 3), orderRule("tf-mgmt", 1)} {
+		if _, err := setRule(t, c, "eth0", rule, false); err != nil {
+			t.Fatalf("set %q: %v", rule.Name, err)
+		}
+	}
+
+	want := []string{"ui-a", "tf-mgmt", "ui-b", "tf-web", "ui-c"}
+	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+
+	rules := fixture.profile["rules"].(map[string]interface{})["eth0"].([]interface{})
+	for _, entry := range rules {
+		obj := entry.(map[string]interface{})
+		name, _ := obj["name"].(string)
+		if !strings.HasPrefix(name, "ui-") {
+			continue
+		}
+		labels, _ := obj["labelList"].([]interface{})
+		if len(labels) != 1 || labels[0] != "manual-"+name {
+			t.Errorf("rule %q lost its unmodelled fields: %v", name, obj["labelList"])
+		}
+	}
+}
+
+// TestClient_SetFirewallRule_ReportsPriorityCollision covers the one case the
+// layout cannot honour: two rules configured for the same position. One of them
+// necessarily ends up under the other, and under a deny rule is a different
+// policy — so the tie is broken the same way on every run, and reported.
+func TestClient_SetFirewallRule_ReportsPriorityCollision(t *testing.T) {
+	for _, arrival := range [][]string{{"alpha", "beta"}, {"beta", "alpha"}} {
+		t.Run(strings.Join(arrival, ","), func(t *testing.T) {
+			c, _, server := newFirewallFixture(t, false, nil)
+			defer server.Close()
+
+			var last *FirewallWriteResult
+			for _, name := range arrival {
+				result, err := setRule(t, c, "eth0", orderRule(name, 0), false)
+				if err != nil {
+					t.Fatalf("set %q: %v", name, err)
+				}
+				last = result
+			}
+
+			// The second write is the first one that can see the tie at all.
+			if last.OrderConflict == nil {
+				t.Fatalf("two rules configured with priority 0 were resolved silently")
+			}
+			if got := last.OrderConflict.Rule; got != arrival[1] {
+				t.Errorf("conflict reported for %q, want the rule being written (%q)", got, arrival[1])
+			}
+			if got := last.OrderConflict.Tied; len(got) != 1 || got[0] != arrival[0] {
+				t.Errorf("conflict names %v, want [%s]", got, arrival[0])
+			}
+
+			if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, []string{"alpha", "beta"}) {
+				t.Errorf("tie broken as %v, want the deterministic [alpha beta]", got)
+			}
+		})
 	}
 }
 
@@ -327,29 +464,17 @@ func TestClient_SetFirewallRule_Concurrent(t *testing.T) {
 		t.Errorf("profile was saved but never applied; a saved profile is not live")
 	}
 
-	// One more pass, now that every rule exists, settles the order: each write
-	// places its own rule at exactly the index its priority names.
-	for i := range n {
-		if _, err := setRule(t, c, "eth0", FirewallRule{
-			Name:     fmt.Sprintf("rule-%d", i),
-			Enabled:  true,
-			Action:   FirewallActionAllow,
-			Protocol: FirewallProtocolTCP,
-			Sources:  []string{fmt.Sprintf("10.%d.0.0/16", i)},
-			Ports:    []string{"5001"},
-			Priority: i,
-		}, false); err != nil {
-			t.Fatalf("reconcile set %d: %v", i, err)
-		}
-	}
-
+	// And the order is the configured one, with no second pass: the goroutines
+	// finish in an order nobody controls, so anything that placed only its own
+	// rule would leave the policy up to the scheduler (issue #122). The rule the
+	// provider does not manage keeps the only position left over.
 	want := make([]string, 0, n+1)
 	for i := range n {
 		want = append(want, fmt.Sprintf("rule-%d", i))
 	}
 	want = append(want, "baseline allow")
 	if got := ruleNames(t, c, "default", "eth0"); !equalStrings(got, want) {
-		t.Errorf("order after reconcile = %v, want %v", got, want)
+		t.Errorf("order after concurrent writes = %v, want %v", got, want)
 	}
 }
 
