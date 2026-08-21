@@ -45,8 +45,34 @@ All provider attributes can also be set via environment variables: `SYNOLOGY_DSM
 | `dsm_event_task` | Boot/shutdown tasks |
 | `dsm_certificate` | Import externally issued TLS certificates |
 | `dsm_certificate_lets_encrypt` | Let's Encrypt certificates via DSM ACME |
+| `dsm_certificate_service` | Bind a certificate to an individual DSM service |
+| `dsm_notification_mail` | Outgoing SMTP transport for DSM notifications |
 
 Most resources also have a matching data source. See [`docs/`](docs/index.md) for full reference.
+
+## Scope
+
+Everything above is managed over the DSM web API. Three things are *not*, for
+three different reasons — the distinction matters when a bootstrap checklist has
+to say whether a step will ever become automatable:
+
+- **Not implemented yet, contributions welcome** — group membership as its own
+  object, the SMB/NFS/FTP file services, shared folder encryption, Login Portal
+  access control profiles, joining a directory service. The usual blocker is an
+  undocumented DSM API whose write contract has to be captured from hardware
+  first.
+- **Not expressible through the DSM API** — POSIX mode and ownership (reported,
+  never writable), fields DSM accepts but never returns, one-shot scheduled
+  tasks. These stay manual until Synology changes the API.
+- **The NAS's own network settings** (static address, gateway, DNS) — not
+  implemented, and the interesting case: an apply that moves the address of the
+  host the provider is talking to severs the session that would confirm the
+  result, and a wrong address is recoverable only with physical access. It is
+  not ruled out, but it needs a lockout guard like the firewall's plus a
+  confirmation path at the new address.
+
+The full breakdown, including what an implementation of the network resources
+would have to carry, is in [the provider documentation](docs/index.md#scope-what-this-provider-manages-and-what-it-does-not).
 
 ## Keeping secrets out of Terraform state
 

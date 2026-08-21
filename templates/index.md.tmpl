@@ -15,6 +15,150 @@ and DSM 7.3.2. DSM 6.x and model-specific packages may behave differently.
 The public Registry source is `batonogov/synology-dsm`; the preferred local name
 and resource prefix remain `dsm`.
 
+## Scope: what this provider manages, and what it does not
+
+Something can be absent from this provider for three different reasons, and the
+difference matters when you are deciding whether a step has to stay in a manual
+runbook forever or only until somebody writes it.
+
+### Covered today
+
+- **Accounts and access** — `dsm_user`, `dsm_group`, `dsm_share_permission`,
+  `dsm_user_quota`, `dsm_user_home_service`
+- **Storage** — `dsm_shared_folder`, `dsm_file`
+- **Applications** — `dsm_package`, `dsm_container_project`
+- **Network services published by DSM** — `dsm_reverse_proxy`,
+  `dsm_firewall_rule`
+- **TLS** — `dsm_certificate`, `dsm_certificate_lets_encrypt`,
+  `dsm_certificate_service`
+- **NAS-wide settings** — `dsm_system_settings` (time zone and NTP only, via
+  `SYNO.Core.Region.NTP`), `dsm_notification_mail` (the outgoing SMTP transport)
+- **Automation** — `dsm_scheduled_task`, `dsm_event_task`
+
+### Not implemented yet — contributions welcome
+
+Nothing in this list is ruled out. The usual blocker is that the DSM API in
+question is undocumented, so its write contract has to be captured from real
+hardware before a resource built on it can be trusted.
+
+- Group membership as its own object (`dsm_group_member`), for configurations
+  that manage one user from several modules
+- File service protocols: `SYNO.Core.FileServ.SMB` / `NFS` / `FTP` and per-share
+  NFS rules (`SYNO.Core.FileServ.NFS.SharePrivilege`)
+- Shared folder encryption (`SYNO.Core.Share.Crypto*`) — key management and
+  mount/unmount need their own design
+- Login Portal access control profiles (`SYNO.Core.AppPortal.AccessControl`) —
+  `dsm_reverse_proxy` can reference a profile by name, but cannot create one
+- Joining a directory service (`SYNO.Core.DirectoryService*`) — share
+  permissions already accept `ldap_user` / `ldap_group` principals on a NAS that
+  is already joined
+- The NAS's own network configuration — see below
+
+### Not expressible through the DSM API
+
+These are not a matter of effort: DSM offers no API that writes them, so they
+stay manual until Synology changes the API.
+
+- **POSIX mode and ownership** on shares and files. `dsm_shared_folder` and
+  `dsm_file` report `posix_mode`, `posix_owner`, `posix_group` and `acl_mode`,
+  and every write path DSM exposes (`SYNO.FileStation.Property` `set`,
+  `SYNO.Core.ACL`, a `mode` on `CreateFolder`) either manages Synology ACLs
+  instead or reports success and changes nothing. A share that needs mode bits
+  for a Docker bind mount needs a `chmod` on the NAS.
+- **Fields DSM accepts and never returns.** `cannot_chg_passwd`, `allow_ip` and
+  `passwd_never_expire` on a user; `hide_unreadable` and `unite_permission` on a
+  shared folder; `personal_photo_enable` on the home service. A value that
+  cannot be read back cannot be reconciled, so these are left out of the schema
+  rather than exposed as permanent drift.
+- **One-shot scheduled tasks** (DSM's single-date, yearly and every-few-months
+  schedules). A fixed date in the past is not an ongoing desired state.
+
+### The NAS's own network settings
+
+Managing the NAS's IP address, gateway and DNS servers — Control Panel →
+Network — is **not implemented**, and it is the one gap where the reason is a
+hazard rather than a missing weekend of work. It is not ruled out; it needs
+guarantees the provider does not have yet.
+
+**What DSM exposes.** The namespaces exist. `SYNO.API.Info` on DSM 7.2.2 lists
+`SYNO.Core.Network` (versions 1–2), `SYNO.Core.Network.Ethernet` (1–2),
+`SYNO.Core.Network.Interface`, `SYNO.Core.Network.Bond`,
+`SYNO.Core.Network.Router.Gateway.List` and `SYNO.Core.Network.Router.Static.Route`,
+and published dumps of DSM's own API definitions add the method names: of those,
+only `SYNO.Core.Network` (`get` / `set` / `test_internet`) and
+`SYNO.Core.Network.Ethernet` (`get` / `list` / `set`) can write anything.
+`SYNO.Core.Network.Interface` is `list`-only — an inventory API, not the write
+path it is sometimes taken for. All of them are administrator-only.
+
+What none of that gives you is a payload. Synology documents none of these APIs,
+the definition dumps carry method names and never parameters, and no public
+client writes them: the python `synology-api` project calls `SYNO.Core.Network`
+with `get` only, and implements `set` for the peripheral namespaces — IPv6, MAC
+clone, static routes, Wake-on-LAN, traffic control — while leaving interface
+addressing alone; `synology-community/go-synology` declares a
+`SYNO.Core.Network` `get` and no write; the other Terraform provider for DSM
+ships `synology_core_network` as a data source only. The reverse proxy and
+firewall clients in this provider were built by reconciling several independent
+implementations that agreed on the same payload. Here there is nothing to
+reconcile, and an implementation would have to start from a capture of Control
+Panel → Network → Apply taken on one DSM build, which nobody else can check.
+
+**Why it is riskier than the rest of this provider.** Every other resource here
+changes something *on* the NAS. This one changes the address the provider is
+talking *to*. An apply that moves the interface cuts the provider's own session
+in the middle of the operation, and what follows is not ordinary staleness:
+
+- the write was sent, the confirmation never arrived, so the provider cannot say
+  whether DSM applied it, partly applied it, or rejected it;
+- the only place the answer could be read from is the new address, which is not
+  the address the provider was configured with;
+- if the new address is wrong — a typo in a netmask, a gateway on another
+  subnet — nothing on the network can reach the NAS at all, and the recovery
+  path is physical: Synology Assistant on the same broadcast domain, or the
+  reset button.
+
+`dsm_firewall_rule` already lives next to this problem — a firewall rule can
+deny the management session — and the answer there was a *lockout guard*: the
+provider records the local address of its own connection to DSM, replays the
+resulting rule set against it before writing, and refuses a change that would
+deny that session unless `allow_lockout = true`. The network case is harder in
+exactly the place that matters: the firewall guard evaluates the outcome
+*before* the write, while an address change destroys the connection the
+confirmation would have travelled over.
+
+**What an implementation would have to carry** to be safe enough to ship:
+
+1. A plan-time determination of whether the change moves the address the
+   provider is currently connected through, on the model of the firewall
+   lockout guard, and a refusal in that case unless the practitioner opts in
+   explicitly.
+2. A confirmation path at the *new* address: reconnect, re-login and re-read the
+   interface within a bounded budget, so that an apply either confirms the new
+   state or fails loudly. An apply that cannot tell success from a bricked NAS
+   is worse than a manual step. (`dsm_certificate` already does the smaller
+   version of this — DSM restarts `httpd` after an import, so the read-back runs
+   on a ~90 s budget instead of once.)
+3. Whole-object read-modify-write. `SYNO.Core.Region.NTP` — the only
+   system-settings API this provider has captured from hardware — rejects a
+   partial `set` with error 5701, and there is no reason to expect the network
+   APIs to be more forgiving. Sending a static address without the gateway and
+   DNS that belong with it is its own way to lose a NAS.
+4. The wire contract captured from a real NAS: which of the two writable
+   namespaces the UI actually uses for a static address, the parameter names and
+   their encoding, whether the call returns before or after the interface
+   reconfigures, and whether DSM answers the in-flight request at all. Interface
+   naming belongs in that capture too — with Open vSwitch enabled, which is the
+   normal state on many DSM 7 units, the interface is `ovs_eth0` rather than
+   `eth0`, so the name a configuration writes has to be discovered rather than
+   assumed.
+
+**If you want to contribute this**, the captures in point 4 are the part that
+cannot be worked around; the rest is ordinary provider work. Until then, the
+honest advice for a bootstrap checklist is to give the NAS its address once —
+by hand, or by a DHCP reservation on the router, which is outside Terraform's
+reach here in any case — and let Terraform take over from the first successful
+login onwards.
+
 ## Authentication
 
 Configure `host`, `username`, and `password` in HCL or with the
