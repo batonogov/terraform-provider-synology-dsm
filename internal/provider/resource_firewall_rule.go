@@ -52,6 +52,13 @@ func (r *firewallRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 		MarkdownDescription: "Manages one rule in a Synology DSM firewall profile.\n\n" +
 			"DSM evaluates a profile's rules top to bottom and stops at the first match, so the order of rules *is* the policy. " +
 			"This resource therefore requires an explicit `priority`, which is the rule's zero-based position in the profile's list.\n\n" +
+			"Rules created in the same apply end up in priority order regardless of the order Terraform writes them, so " +
+			"`depends_on` between rules is not needed.\n\n" +
+			"~> **Managed rules take their positions first.** Rules created in the DSM UI are never reordered against each " +
+			"other and keep everything this provider does not model, but they fill the positions no managed rule claims — so " +
+			"a rule managed here with `priority = 0` moves a hand-written rule at the top of the list down one. For a firewall " +
+			"that is a change of policy, not of presentation: check the resulting order in DSM after the first apply against " +
+			"a profile you did not create from Terraform.\n\n" +
 			"~> **The firewall can lock you out.** Before every write the provider replays the resulting rule set against its own " +
 			"DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. " +
 			"Deleting the last rule of an enabled profile is refused for the same reason; override with `allow_empty_rule_set = true`.\n\n" +
@@ -96,7 +103,11 @@ func (r *firewallRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 			"priority": schema.Int64Attribute{
 				Required: true,
 				Description: "Zero-based position of the rule in the profile's list. Lower numbers are evaluated first. " +
-					"Reading the rule reports its actual position, so a reordering done outside Terraform shows up as a diff.",
+					"Every write lays out the whole list from the configured priorities, so rules created in one apply end up " +
+					"in priority order however Terraform schedules them — no depends_on required. Number the rules of one " +
+					"profile and adapter contiguously from 0, counting any rules created outside Terraform: a priority past " +
+					"the end of the list cannot be honoured, and reading the rule reports its actual position, so both that " +
+					"and a reordering done in DSM show up as a diff.",
 			},
 			"action": schema.StringAttribute{
 				Required:    true,
@@ -213,11 +224,20 @@ func (r *firewallRuleResource) Read(ctx context.Context, req resource.ReadReques
 		"name":    name,
 	})
 
-	rule, err := r.client.GetFirewallRule(ctx, profile, adapter, name)
+	placement, err := r.client.GetFirewallRulePlacement(ctx, profile, adapter, name)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read firewall rule", err.Error())
 		return
 	}
+	rule := placement.Rule
+
+	// Checked here rather than during the write, and before the configured value
+	// is overwritten below. A write cannot tell "this priority is out of range"
+	// apart from "the other rules of this apply do not exist yet", because it
+	// cannot know what Terraform is about to create. A refresh can: the list is
+	// whole and nothing is being created alongside.
+	appendUnreachablePriorityWarning(&resp.Diagnostics, profile, adapter, name,
+		state.Priority, rule.Priority, placement.RuleCount)
 
 	state.ID = types.StringValue(client.BuildFirewallRuleID(profile, adapter, name))
 	state.Profile = types.StringValue(profile)
@@ -298,6 +318,7 @@ func (r *firewallRuleResource) write(ctx context.Context, plan *firewallRuleReso
 		return
 	}
 	appendLockoutWarning(diags, result.LockoutWarning)
+	appendOrderConflictWarning(diags, result.OrderConflict)
 
 	plan.ID = types.StringValue(client.BuildFirewallRuleID(
 		plan.Profile.ValueString(),
@@ -306,18 +327,9 @@ func (r *firewallRuleResource) write(ctx context.Context, plan *firewallRuleReso
 	))
 
 	// Priority in state stays as planned — returning the achieved index here
-	// would be an inconsistent-result error from Terraform. Instead the gap is
-	// reported, and the next refresh turns it into an ordinary diff.
-	if int64(result.Rule.Priority) != plan.Priority.ValueInt64() {
-		diags.AddWarning(
-			"Firewall rule order has not settled",
-			fmt.Sprintf(
-				"Rule %q asked for priority %d but landed at position %d, because the profile did not yet have that many rules. "+
-					"The effective policy is the position, not the configured priority. Run terraform apply again to move it "+
-					"into place, or add depends_on between rules so they are created in priority order.",
-				plan.Name.ValueString(), plan.Priority.ValueInt64(), result.Rule.Priority),
-		)
-	}
+	// would be an inconsistent-result error from Terraform. The next refresh
+	// reports the actual position, so a priority the profile is too short to
+	// honour turns into an ordinary diff instead of a silent surprise.
 }
 
 func (r *firewallRuleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -379,6 +391,67 @@ func appendLockoutWarning(diags *diag.Diagnostics, warning *client.Indeterminate
 			"\n\nThe change was applied anyway, because the uncertainty comes from a rule this provider does not model "+
 			"(a GeoIP or application-preset rule, typically) rather than from the change itself. Confirm you can still "+
 			"reach DSM before closing this session.",
+	)
+}
+
+// appendOrderConflictWarning reports two rules configured for the same position.
+//
+// The provider places rules by their configured priority rather than by the
+// order Terraform happens to write them, which makes the resulting policy
+// reproducible — but two rules cannot share one position, and for a firewall
+// "below" is a different policy, so the tie is named rather than resolved out
+// of sight.
+func appendOrderConflictWarning(diags *diag.Diagnostics, conflict *client.FirewallOrderConflict) {
+	if conflict == nil {
+		return
+	}
+	diags.AddWarning(
+		"Two firewall rules are configured with the same priority",
+		conflict.Error()+
+			"\n\nDSM matches rules top to bottom and stops at the first match, so which of the two comes first is a policy "+
+			"decision this configuration has not made. Give each rule of a profile and adapter its own priority.",
+	)
+}
+
+// appendUnreachablePriorityWarning reports a priority the profile is too short
+// to hold.
+//
+// Priority is a position in DSM's list, not a sort key, so priorities numbered
+// 10/20/30 — the usual way of leaving room between entries — cannot be honoured
+// by a profile of three rules. The provider still orders those three correctly,
+// but the position it reports on refresh will never equal the configured number,
+// and applying the resulting diff cannot close the gap: there is nothing to put
+// in the positions in between. Left unsaid, that reads as ordinary drift that
+// the next apply will settle, and it never settles.
+//
+// Silent when the rule has no configured priority yet (a fresh import), and
+// silent whenever the number is within reach — including when the rule merely
+// sits somewhere else, which is real drift and shows up as an ordinary diff.
+func appendUnreachablePriorityWarning(
+	diags *diag.Diagnostics,
+	profile, adapter, name string,
+	configured types.Int64,
+	actual, ruleCount int,
+) {
+	if configured.IsNull() || configured.IsUnknown() || ruleCount == 0 {
+		return
+	}
+	last := int64(ruleCount - 1)
+	if configured.ValueInt64() <= last {
+		return
+	}
+
+	diags.AddWarning(
+		"Firewall rule priority is beyond the end of the profile",
+		fmt.Sprintf(
+			"Rule %q is configured with priority %d, but profile %q adapter %q holds %d rule(s), so the highest position "+
+				"that exists is %d. The rule sits at position %d.\n\n"+
+				"Priority is the rule's position in DSM's list, not a sort key, so this diff will not settle by itself: "+
+				"the next plan will show priority %d changing to %d, and applying it leaves the rule exactly where it is. "+
+				"The rules that do exist are still ordered as configured. To clear it, number the rules of this profile "+
+				"and adapter contiguously from 0 — counting any rules created in DSM itself — or add the missing rules.",
+			name, configured.ValueInt64(), profile, adapter, ruleCount, last, actual,
+			configured.ValueInt64(), actual),
 	)
 }
 

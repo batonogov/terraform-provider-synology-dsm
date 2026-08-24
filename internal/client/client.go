@@ -100,6 +100,19 @@ type Client struct {
 	// critical section (getReverseProxy, findReverseProxyByDescription) must
 	// never take it, or every mutation would deadlock on its own read-back.
 	reverseProxyMu sync.Mutex
+	// firewallRuleOrder remembers the priority this provider was asked to give
+	// each firewall rule it has written, keyed profile → adapter → rule name.
+	//
+	// A firewall rule's priority is its index in the profile's list, and DSM has
+	// no per-rule API: every write rewrites the whole list. Terraform creates
+	// independent resources concurrently and in arbitrary order, so a write that
+	// only knows about its own rule can do no better than clamp it to the end of
+	// whatever list happens to exist at that moment — which leaves the final
+	// order dependent on scheduling. Remembering the priorities lets every write
+	// lay the whole list out deterministically, so the last write of an apply
+	// always lands on the configured order no matter what order the writes came
+	// in. Guarded by mu, which every firewall write already holds.
+	firewallRuleOrder map[string]map[string]map[string]int
 	// localIP is the source address of the TCP connection this client uses to
 	// reach DSM, captured by the transport's dialer. The firewall resource needs
 	// it to answer "would this rule set cut off the session I am talking over?".
