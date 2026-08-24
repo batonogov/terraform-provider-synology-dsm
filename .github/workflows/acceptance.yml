@@ -3,12 +3,8 @@ name: Acceptance Tests
 on:
   workflow_dispatch:
     inputs:
-      run_file_tests:
-        description: "Run dsm_file acceptance tests (File Station)"
-        type: boolean
-        default: true
       run_gated_tests:
-        description: "Run gated acceptance tests (quota, container, system, reverse_proxy, task)"
+        description: "Also run the gated tests (quota, container project, system settings, reverse proxy, firewall) — needs real hardware and rewrites live configuration"
         type: boolean
         default: false
   schedule:
@@ -27,7 +23,8 @@ jobs:
   acceptance:
     name: Virtual DSM Acceptance Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Boot (up to 45 minutes without KVM) plus the suite's own 45-minute budget.
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -39,18 +36,43 @@ jobs:
         run: go build -trimpath -o bin/terraform-provider-synology-dsm .
 
       # ── Bring up virtual DSM ──────────────────────────────────────
-      # Cold start takes 10-20 minutes on QEMU emulation; the wait
-      # script polls the API entry point for up to 20 minutes.
+      # The image needs /dev/net/tun and NET_ADMIN to give the guest a network,
+      # and /dev/kvm to run at anything other than emulation speed. None of that
+      # lives in docker-compose.test.yml, because that file is also used inside
+      # the Lima VM, where /dev/kvm does not exist and a missing device would
+      # fail `up` outright.
       - name: Start virtual DSM
         run: |
-          docker compose -f docker-compose.test.yml up -d
+          set -euo pipefail
+          FILES="-f docker-compose.test.yml -f docker-compose.ci.yml"
+          if [ -e /dev/kvm ]; then
+            echo "KVM is available: $(ls -l /dev/kvm)"
+            FILES="$FILES -f docker-compose.ci-kvm.yml"
+          else
+            echo "::warning::/dev/kvm is not present on this runner. Virtual DSM falls back to software emulation, which is roughly an order of magnitude slower to boot."
+            echo "DSM_TIMEOUT=2700" >> "$GITHUB_ENV"
+          fi
+          echo "COMPOSE_FILES=$FILES" >> "$GITHUB_ENV"
+          docker compose $FILES up -d
           echo "Container started, waiting for DSM API..."
 
       - name: Wait for DSM
         run: bash scripts/wait-for-dsm.sh
         env:
           DSM_HOST: http://localhost:5000
-          DSM_TIMEOUT: "1200"
+          DSM_TIMEOUT: ${{ env.DSM_TIMEOUT || '1800' }}
+
+      # ── Diagnostics ──────────────────────────────────────────────
+      # Runs on any failure above or below. Run 32616185796 failed with the wait
+      # script's timeout as the only evidence anywhere: the container's own logs
+      # were never captured, and the issue it opened could therefore say nothing
+      # about why. The tail is also attached to that issue below.
+      - name: Collect virtual DSM logs
+        if: failure()
+        run: |
+          docker compose $COMPOSE_FILES ps -a || true
+          docker compose $COMPOSE_FILES logs --tail 400 > dsm-logs.txt 2>&1 || true
+          tail -n 400 dsm-logs.txt || true
 
       # ── Sweep leftover test resources ────────────────────────────
       # Only the root package registers sweepers; do NOT use ./...
@@ -63,23 +85,23 @@ jobs:
           SYNOLOGY_DSM_PASSWORD: ""
 
       # ── Run acceptance tests ─────────────────────────────────────
-      # File Station tests run by default. Gated tests (quota, container
-      # manager, system settings, reverse proxy, task scheduler) require
-      # explicit opt-in via DSM_ACC_* env vars.
+      # Every gate is an environment variable read with os.Getenv in
+      # internal/acctest; passing them as `go test -DSM_ACC_...` flags made the
+      # test binary exit with "flag provided but not defined" before running a
+      # single test. The names below are the ones the code actually looks for.
       - name: Run acceptance tests
-        run: |
-          ARGS=""
-          if [ "${{ inputs.run_file_tests || true }}" = "true" ]; then
-            ARGS="$ARGS -DSM_ACC_FILE=1"
-          fi
-          if [ "${{ inputs.run_gated_tests || false }}" = "true" ]; then
-            ARGS="$ARGS -DSM_ACC_QUOTA=1 -DSM_ACC_CONTAINER=1 -DSM_ACC_SYSTEM=1 -DSM_ACC_REVERSE_PROXY=1 -DSM_ACC_TASK=1"
-          fi
-          TF_ACC=1 go test -v -timeout 45m $ARGS ./...
+        run: TF_ACC=1 go test -v -timeout 45m ./...
         env:
           SYNOLOGY_DSM_HOST: http://localhost:5000
           SYNOLOGY_DSM_USERNAME: admin
           SYNOLOGY_DSM_PASSWORD: ""
+          # Gated tests need real hardware, rewrite live service configuration,
+          # or can lock the runner out of the NAS. Off unless asked for.
+          DSM_ACC_QUOTA: ${{ inputs.run_gated_tests && '1' || '' }}
+          DSM_ACC_CONTAINER_PROJECT: ${{ inputs.run_gated_tests && '1' || '' }}
+          DSM_ACC_SYSTEM_SETTINGS: ${{ inputs.run_gated_tests && '1' || '' }}
+          DSM_ACC_REVERSE_PROXY: ${{ inputs.run_gated_tests && '1' || '' }}
+          DSM_ACC_FIREWALL: ${{ inputs.run_gated_tests && '1' || '' }}
 
       - name: Create issue on failure
         if: failure()
@@ -94,18 +116,35 @@ jobs:
               labels: ['acceptance'],
               per_page: 1,
             });
+            // The container's own log is the difference between "a test failed"
+            // and "DSM never booted" — the two failures look identical from the
+            // outside, and the second one leaves no trace in the Go output at all.
+            const fs = require('fs');
+            let logTail = '';
+            try {
+              const lines = fs.readFileSync('dsm-logs.txt', 'utf8').trimEnd().split('\n');
+              logTail = lines.slice(-60).join('\n');
+            } catch {
+              logTail = '(no container log was captured)';
+            }
             const body = [
               '## Acceptance test failure',
               '',
               `**Run:** ${runUrl}`,
               '',
-              'The acceptance test suite failed against virtual DSM. Check the workflow logs for details.',
+              'The acceptance test suite failed against virtual DSM.',
+              '',
+              '## Last lines of the virtual DSM container log',
+              '',
+              '```',
+              logTail,
+              '```',
               '',
               '## Next steps',
-              '1. Download the workflow logs',
-              '2. Reproduce locally: `task test-env-up && task test-acc`',
-              '3. Fix the failing test',
-              '4. Re-run this workflow to confirm',
+              '1. Read the log above: a wait-for-DSM timeout with no QEMU output is a container problem, not a test failure',
+              '2. Download the workflow logs for the Go output',
+              '3. Reproduce locally: `task test-env-up && task test-acc`',
+              '4. Re-run this workflow to confirm the fix',
             ].join('\n');
             if (issues.length > 0) {
               await github.rest.issues.createComment({
@@ -124,4 +163,4 @@ jobs:
 
       - name: Tear down virtual DSM
         if: always()
-        run: docker compose -f docker-compose.test.yml down -v
+        run: docker compose ${COMPOSE_FILES:--f docker-compose.test.yml} down -v

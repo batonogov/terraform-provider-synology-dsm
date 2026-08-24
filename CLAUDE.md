@@ -205,6 +205,10 @@ task test-env-status  # Check status
 
 **Setup:** Lima VM (`.lima/dsm.yaml`, aarch64 QEMU) → Docker inside VM runs `vdsm/virtual-dsm` container (`docker-compose.test.yml`) → DSM API on `localhost:5001` → `scripts/wait-for-dsm.sh` polls until ready (~10-20 min on cold start, seconds on restart with saved state).
 
+**In CI the same container needs two overlay files** (issue #128). `vdsm/virtual-dsm` documents `/dev/net/tun` plus `NET_ADMIN` as required and `/dev/kvm` as what keeps it from running at emulation speed, and none of that can live in `docker-compose.test.yml`, which is also used inside the Lima VM where `/dev/kvm` does not exist — Compose resolves `devices` before starting anything, so naming a device the host lacks fails the whole `up`. Hence `docker-compose.ci.yml` (tun, `NET_ADMIN`, runner-sized RAM and cores) and `docker-compose.ci-kvm.yml` (`/dev/kvm` alone), the second layered on only when the runner exposes the device. Without them the container never gives the guest a network, nothing answers on port 5000, and the *only* symptom is `wait-for-dsm.sh` timing out — which is why the workflow now captures `docker compose logs` on failure and puts the tail in the issue it opens. A wait timeout with no QEMU output in that tail is a container problem, not a failing test.
+
+**The acceptance gates are environment variables, never `go test` flags.** `internal/acctest` reads them with `os.Getenv`, so `go test -DSM_ACC_QUOTA=1` exits with "flag provided but not defined" before a single test runs. The names are exactly `DSM_ACC_QUOTA`, `DSM_ACC_CONTAINER_PROJECT`, `DSM_ACC_CONTAINER_IMAGE`, `DSM_ACC_SYSTEM_SETTINGS`, `DSM_ACC_REVERSE_PROXY` and `DSM_ACC_FIREWALL`; there is no `DSM_ACC_FILE`, `DSM_ACC_CONTAINER`, `DSM_ACC_SYSTEM` or `DSM_ACC_TASK`, and the File Station tests are ungated.
+
 **Virtual DSM specifics:**
 - Login with empty password (`admin`/`""`)
 - No shared folders by default — tests must create them
