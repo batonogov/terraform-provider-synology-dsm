@@ -65,11 +65,11 @@ func (r *firewallResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"NAS. The method and its two fields are confirmed from Synology's own webapi descriptor and firewall " +
 			"library; the HTTP verb and the string encoding are not, so the provider tries each in turn and reports " +
 			"clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.\n\n" +
-			"~> `default_policy` is written by sending the whole profile back, and on a DSM whose profile is *adapter-keyed* " +
-			"(the shape captured from 7.2.2) the provider cannot encode a firewall rule. A profile that already holds rules " +
-			"therefore cannot have its default policy changed from here until that encoding is known — the alternative is " +
-			"sending a payload that crashes DSM's request parser. A profile with no rules is written normally, and that " +
-			"round trip is confirmed. See " +
+			"~> `default_policy` is written by sending the whole profile back, so rules already in the profile travel with " +
+			"it. They are handed back to DSM exactly as DSM sent them, which needs no encoding and is what the DSM web " +
+			"interface itself does; the policy round trip is confirmed on 7.2.2. What the provider will not do is *render* " +
+			"a rule into an adapter-keyed profile — no known encoding survives DSM's request parser — so a write that would " +
+			"have to modify a rule is refused instead. See " +
 			"[issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130).",
 
 		Attributes: map[string]schema.Attribute{
@@ -458,11 +458,12 @@ func appendFirewallSettingsDiagnostic(diags *diag.Diagnostics, summary string, e
 	var unsupported *client.FirewallRuleWriteUnsupportedError
 	if errors.As(err, &unsupported) {
 		diags.AddError(
-			"This DSM's firewall profile cannot be rewritten while it holds rules",
+			"This DSM's firewall rules cannot be written by the provider",
 			unsupported.Error()+
-				"\n\nNothing was written. The default policy is written by sending the whole profile back, so a profile that "+
-				"already holds rules cannot be changed until the rule encoding is known — even though the policy itself is "+
-				"confirmed to round-trip. Set the default policy in Control Panel -> Security -> Firewall for now, and see "+
+				"\n\nNothing was written. Rules DSM sent are handed back untouched, so an ordinary default-policy change goes "+
+				"through even on a profile full of rules; this refusal means the write would have had to render a rule — one "+
+				"is being created or edited, or an entry in the profile could not be read and would have been dropped. Make "+
+				"that rule change in Control Panel -> Security -> Firewall for now, and see "+
 				"https://github.com/batonogov/terraform-provider-synology-dsm/issues/130 for the one capture that would lift "+
 				"this.",
 		)

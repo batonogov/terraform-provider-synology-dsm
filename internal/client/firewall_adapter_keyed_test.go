@@ -348,14 +348,68 @@ func TestClient_SetFirewallRule_AdapterKeyedRefusesToGuessTheRuleShape(t *testin
 	}
 }
 
-// The refusal covers the whole profile, not only the adapter being written: a
-// `set` carries every adapter, so one rule anywhere makes the payload
-// unsendable. That includes the default-policy path, which otherwise works.
-func TestClient_SetFirewall_AdapterKeyedRefusedWhileAnotherAdapterHoldsRules(t *testing.T) {
+// A profile that already holds rules created in the DSM UI can still have its
+// default policy managed, and the rules go back as the objects DSM sent.
+//
+// This is the case that decides whether dsm_firewall is usable at all: a `set`
+// carries the whole profile, so refusing whenever a rule is present anywhere
+// would take the resource away from every NAS that actually uses its firewall.
+// Handing DSM back its own objects needs no encoding, which is the thing nobody
+// knows how to do.
+func TestClient_SetFirewall_AdapterKeyedEchoesRulesItDidNotAuthor(t *testing.T) {
+	manual := allowAllRule("made in the DSM UI")
+	manual["labelList"] = []interface{}{"from-the-ui"}
+
 	state := capturedAdapterKeyedState()
 	state["eth0"] = map[string]interface{}{
 		"policy": "allow",
-		"rules":  []interface{}{allowAllRule("made in the DSM UI")},
+		"rules":  []interface{}{manual},
+	}
+
+	c, f := newAdapterKeyedFixture(t, state)
+
+	if _, err := c.SetFirewall(context.Background(), SetFirewallRequest{
+		Profile:       "default",
+		Enabled:       false,
+		DefaultPolicy: map[string]string{FirewallAdapterGlobal: FirewallPolicyDeny},
+	}); err != nil {
+		t.Fatalf("SetFirewall: %v", err)
+	}
+	if f.sets != 1 {
+		t.Fatalf("profile writes = %d, want 1", f.sets)
+	}
+
+	var sent map[string]interface{}
+	if err := json.Unmarshal([]byte(f.lastSet), &sent); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	block, ok := sent["eth0"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("eth0 block missing from the payload: %#v", sent)
+	}
+	rules, ok := block["rules"].([]interface{})
+	if !ok || len(rules) != 1 {
+		t.Fatalf("eth0 rules = %#v, want the one rule DSM sent", block["rules"])
+	}
+
+	wantJSON, _ := json.Marshal(manual)
+	gotJSON, _ := json.Marshal(rules[0])
+	if string(gotJSON) != string(wantJSON) {
+		t.Errorf("rule was re-rendered rather than echoed:\n got  %s\n want %s", gotJSON, wantJSON)
+	}
+	if policy, _ := sent["global"].(map[string]interface{}); policy["policy"] != "drop" {
+		t.Errorf("global policy = %v, want drop — the change this write existed for", policy["policy"])
+	}
+}
+
+// An entry the parser could not read is the one case where presence alone is
+// enough to refuse: nothing was kept to hand back, so writing the rest would
+// delete it quietly.
+func TestClient_SetFirewall_AdapterKeyedRefusesWhenAnEntryWasNotParsed(t *testing.T) {
+	state := capturedAdapterKeyedState()
+	state["eth0"] = map[string]interface{}{
+		"policy": "allow",
+		"rules":  []interface{}{"not an object at all"},
 	}
 
 	c, f := newAdapterKeyedFixture(t, state)
@@ -365,16 +419,13 @@ func TestClient_SetFirewall_AdapterKeyedRefusedWhileAnotherAdapterHoldsRules(t *
 		Enabled:       false,
 		DefaultPolicy: map[string]string{FirewallAdapterGlobal: FirewallPolicyDeny},
 	})
-	if err == nil {
-		t.Fatal("expected a refusal while the profile holds a rule the provider cannot encode")
-	}
 
 	var unsupported *FirewallRuleWriteUnsupportedError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("expected *FirewallRuleWriteUnsupportedError, got %T: %v", err, err)
 	}
 	if f.sets != 0 {
-		t.Fatalf("a payload carrying an unencodable rule was sent %d time(s)", f.sets)
+		t.Fatalf("a payload that would have dropped an unread entry was sent %d time(s)", f.sets)
 	}
 	if len(unsupported.Adapters) != 1 || unsupported.Adapters[0] != "eth0" {
 		t.Errorf("Adapters = %v, want [eth0]", unsupported.Adapters)
