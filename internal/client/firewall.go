@@ -19,6 +19,15 @@ var (
 	firewallApplyTimeout      = 2 * time.Minute
 )
 
+// Read-after-write verification cadence. A DSM that has just re-rendered its
+// iptables chains may serve the profile back a moment later than it accepted it,
+// so the check is retried a few times before it is called a failure. Variables
+// rather than constants so tests can shrink them.
+var (
+	firewallVerifyAttempts = 3
+	firewallVerifyInterval = 500 * time.Millisecond
+)
+
 // Actions, protocols and the global adapter name as this provider spells them.
 const (
 	FirewallActionAllow = "allow"
@@ -127,8 +136,22 @@ type FirewallProfile struct {
 	// drop (1), or none (2). There is no global default — this map is it.
 	AdapterPolicy map[string]int
 
+	// rulesKeyPresent records whether DSM's response carried a `rules` key at
+	// all, as opposed to carrying one that was empty. The two look identical
+	// once parsed and mean very different things: an empty profile, or a DSM
+	// that does not keep rules inside the profile object. DSM's own webapi
+	// descriptor lists a separate SYNO.Core.Security.Firewall.Rules API with
+	// `load` / `save_start` / `save_status` / `save_stop`, so the second reading
+	// is not far-fetched, and a diagnostic that cannot tell them apart sends the
+	// reader looking in the wrong place.
+	rulesKeyPresent bool
+
 	raw map[string]interface{}
 }
+
+// HasRulesKey reports whether the profile as DSM returned it carried a `rules`
+// key. False means DSM never mentioned rules, not that it reported none.
+func (p *FirewallProfile) HasRulesKey() bool { return p.rulesKeyPresent }
 
 // FirewallSettings is the global firewall switch plus the profile currently in
 // force. CONFIRMED: SYNO.Core.Security.Firewall v1 `get` answers exactly
@@ -255,6 +278,149 @@ func (e *IndeterminateLockoutError) Error() string {
 		e.Profile, e.Verdict.Reason)
 }
 
+// FirewallNotPersistedError reports that DSM accepted a firewall profile write
+// with success = true and then did not store the change.
+//
+// This is the failure mode of issue #130: five rules created in one apply, five
+// successful responses, and a profile that afterwards holds no rules at all.
+// DSM's `set` on SYNO.Core.Security.Firewall.Profile answers success for a
+// payload it goes on to ignore, so the response cannot be trusted as evidence
+// that anything happened -- only a read-back can. Reporting the write as a
+// success would put a rule in Terraform state that does not exist on the NAS,
+// and every later plan would say "no changes" about a firewall that is not
+// configured.
+type FirewallNotPersistedError struct {
+	Profile string
+	Adapter string
+	Rule    string
+	// Operation is "write" or "delete", so the message can say which direction
+	// failed to take.
+	Operation string
+	// Mismatches names the fields that came back different when the rule is
+	// present but wrong. Empty when the rule is missing (or, for a delete, still
+	// present) altogether.
+	Mismatches []string
+	// Found lists the rule names the adapter holds after the write, so the
+	// message can distinguish "DSM stored nothing" from "DSM stored something
+	// else". Nil when the adapter has no rules.
+	Found []string
+	// Adapters lists the adapter keys the profile came back with, which is the
+	// other thing that can be wrong: a rule written under an adapter name DSM
+	// does not keep would vanish exactly like this.
+	Adapters []string
+	// NoRulesKey records that the profile DSM returned did not mention rules at
+	// all. See FirewallProfile.rulesKeyPresent for why that is worth saying out
+	// loud rather than rendering as "zero rules".
+	NoRulesKey bool
+}
+
+func (e *FirewallNotPersistedError) Error() string {
+	var b strings.Builder
+
+	switch {
+	case e.Operation == "delete":
+		fmt.Fprintf(&b, "DSM reported success but firewall rule %q is still in profile %q adapter %q after the delete",
+			e.Rule, e.Profile, e.Adapter)
+	case len(e.Mismatches) > 0:
+		fmt.Fprintf(&b, "DSM reported success but firewall rule %q came back different in profile %q adapter %q (%s)",
+			e.Rule, e.Profile, e.Adapter, strings.Join(e.Mismatches, "; "))
+	default:
+		fmt.Fprintf(&b, "DSM reported success but firewall rule %q is not in profile %q adapter %q after the write",
+			e.Rule, e.Profile, e.Adapter)
+	}
+
+	if len(e.Found) > 0 {
+		fmt.Fprintf(&b, "; that adapter now holds %s", strings.Join(quoteAll(e.Found), ", "))
+	} else if e.Operation != "delete" {
+		b.WriteString("; that adapter now holds no rules at all")
+	}
+	if len(e.Adapters) > 0 {
+		fmt.Fprintf(&b, "; the profile came back with adapter(s) %s", strings.Join(quoteAll(e.Adapters), ", "))
+	} else {
+		b.WriteString("; the profile came back with no adapters at all")
+	}
+
+	if e.NoRulesKey {
+		b.WriteString(". Note that the profile DSM returned carries no \"rules\" key at all, rather than an empty one: " +
+			"this DSM may not keep rules inside the profile object, in which case SYNO.Core.Security.Firewall.Profile " +
+			"`set` would have no reason to store them. DSM's own webapi descriptor lists a separate " +
+			"SYNO.Core.Security.Firewall.Rules API (`load`, `save_start`, `save_status`, `save_stop`) which this client " +
+			"deliberately does not use")
+	}
+
+	return b.String()
+}
+
+// FirewallProfileShapeError reports that SYNO.Core.Security.Firewall.Profile
+// `get` answered something that is not a profile.
+//
+// It is a refusal to guess, and the refusal is the safety property. The rule
+// writes are read-modify-write: they take the profile DSM returned, splice one
+// rule into it, and send the whole thing back. A response this code fails to
+// recognise parses into a profile with no rules and no adapter policies -- and
+// writing *that* back would replace every rule the operator has with the single
+// rule being added. Erroring on the read is the difference between "the provider
+// could not read your firewall" and "the provider deleted your firewall".
+//
+// The `name` request parameter and the response envelope are both INFERRED (see
+// GetFirewallProfile), so this is the error that will surface a DSM whose shape
+// differs from the one this client was written against.
+type FirewallProfileShapeError struct {
+	Profile string
+	// Keys is what DSM actually returned at the top level, sorted.
+	Keys []string
+	// AdapterKeyed names the top-level keys that look like an adapter carrying
+	// its own rule list -- {"global": {"policy": ..., "rules": [...]}}. That is
+	// the one alternative shape there is published evidence for, and naming it
+	// turns "the provider does not understand this" into a specific question.
+	AdapterKeyed []string
+}
+
+func (e *FirewallProfileShapeError) Error() string {
+	keys := "nothing"
+	if len(e.Keys) > 0 {
+		keys = strings.Join(quoteAll(e.Keys), ", ")
+	}
+
+	msg := fmt.Sprintf(
+		"SYNO.Core.Security.Firewall.Profile `get` answered success for profile %q but the response carries none of the keys "+
+			"a profile has (%q, %q, %q); it carries %s instead. The provider cannot tell an empty profile apart from a "+
+			"response it is misreading, and writing back a profile it reconstructed from an unrecognised response would "+
+			"replace every rule the profile holds",
+		e.Profile, "name", "rules", "adapterPolicyMap", keys)
+
+	if len(e.AdapterKeyed) > 0 {
+		msg += fmt.Sprintf(
+			". The keys %s each hold their own rule list, which is the adapter-keyed shape two published DSM clients send "+
+				"and read (Schidstorm/home-platform, KastnerRG/krg-infra) -- so this DSM most likely speaks that shape over "+
+				"HTTP rather than the on-disk shape from Synology's own fwDB.hpp that this client was built against. That is "+
+				"the leading explanation for issue #130 and it has never been confirmed against hardware",
+			strings.Join(quoteAll(e.AdapterKeyed), ", "))
+	}
+
+	return msg
+}
+
+// adapterKeyedProfileKeys reports the top-level keys that look like an adapter
+// carrying its own rule list. See FirewallProfileShapeError.AdapterKeyed.
+func adapterKeyedProfileKeys(envelope map[string]json.RawMessage) []string {
+	var out []string
+	for key, raw := range envelope {
+		var value struct {
+			Rules []json.RawMessage `json:"rules"`
+		}
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		if value.Rules == nil {
+			continue
+		}
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // GetFirewallSettings reports the global firewall switch and the active profile.
 func (c *Client) GetFirewallSettings(ctx context.Context) (*FirewallSettings, error) {
 	data, err := c.DoAPI(ctx, "SYNO.Core.Security.Firewall", "1", "get", url.Values{})
@@ -295,12 +461,30 @@ func (c *Client) GetFirewallProfile(ctx context.Context, name string) (*Firewall
 	body := data
 	if nested, ok := envelope["profile"]; ok {
 		body = nested
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			return nil, fmt.Errorf("parse firewall profile %q: %w", name, err)
+		}
+	}
+
+	// A response carrying neither of the two structural keys is not a profile,
+	// however successful the envelope was. Proceeding would hand the caller an
+	// empty profile, and the callers here are read-modify-write: they would send
+	// that emptiness back and wipe the rules DSM never showed them.
+	_, hasRules := envelope["rules"]
+	_, hasPolicy := envelope["adapterPolicyMap"]
+	if !hasRules && !hasPolicy {
+		return nil, &FirewallProfileShapeError{
+			Profile:      name,
+			Keys:         sortedKeys(envelope),
+			AdapterKeyed: adapterKeyedProfileKeys(envelope),
+		}
 	}
 
 	profile, err := parseFirewallProfile(body)
 	if err != nil {
 		return nil, fmt.Errorf("parse firewall profile %q: %w", name, err)
 	}
+	profile.rulesKeyPresent = hasRules
 	if profile.Name == "" {
 		profile.Name = name
 	}
@@ -425,6 +609,14 @@ func (c *Client) SetFirewallRule(ctx context.Context, req SetFirewallRuleRequest
 
 	if err := c.writeFirewallProfile(ctx, after, settings); err != nil {
 		return nil, fmt.Errorf("set firewall rule %q in profile %q: %w", req.Rule.Name, req.Profile, err)
+	}
+
+	// DSM's success is not evidence (issue #130). Read the profile back and
+	// insist the rule is really in it before anything downstream treats the write
+	// as done -- including this client's own priority record, which exists to
+	// reproduce a layout DSM accepted and must not remember one it discarded.
+	if err := c.verifyFirewallRuleWritten(ctx, req.Profile, req.Adapter, req.Rule); err != nil {
+		return nil, err
 	}
 
 	// The position is now DSM's, so it becomes the provider's to maintain.
@@ -578,7 +770,210 @@ func (c *Client) DeleteFirewallRule(ctx context.Context, profileName, adapter, n
 	if err := c.writeFirewallProfile(ctx, after, settings); err != nil {
 		return nil, fmt.Errorf("delete firewall rule %q from profile %q: %w", name, profileName, err)
 	}
+
+	// Same reason as the write path: a delete DSM accepted and did not perform
+	// would drop the resource out of Terraform state and leave the rule in force.
+	// For a firewall rule that is the worse direction of the two -- an allow rule
+	// nobody knows about any more, or a deny rule that keeps denying.
+	if err := c.verifyFirewallRuleRemoved(ctx, profileName, adapter, name); err != nil {
+		return nil, err
+	}
 	return &FirewallWriteResult{LockoutWarning: warning}, nil
+}
+
+// verifyFirewallRuleWritten re-reads the profile and insists the rule is in it,
+// with the fields it was written with.
+func (c *Client) verifyFirewallRuleWritten(ctx context.Context, profileName, adapter string, want FirewallRule) error {
+	return c.verifyFirewallProfile(ctx, profileName, func(profile *FirewallProfile) error {
+		rules := profile.Rules[adapter]
+		for i := range rules {
+			if rules[i].Name != want.Name {
+				continue
+			}
+			mismatches := firewallRuleMismatches(want, rules[i])
+			if len(mismatches) == 0 {
+				return nil
+			}
+			return &FirewallNotPersistedError{
+				Profile:    profileName,
+				Adapter:    adapter,
+				Rule:       want.Name,
+				Operation:  "write",
+				Mismatches: mismatches,
+				Found:      firewallRuleNames(rules),
+				Adapters:   sortedAdapters(profile),
+				NoRulesKey: !profile.HasRulesKey(),
+			}
+		}
+		return &FirewallNotPersistedError{
+			Profile:    profileName,
+			Adapter:    adapter,
+			Rule:       want.Name,
+			Operation:  "write",
+			Found:      firewallRuleNames(rules),
+			Adapters:   sortedAdapters(profile),
+			NoRulesKey: !profile.HasRulesKey(),
+		}
+	})
+}
+
+// verifyFirewallRuleRemoved re-reads the profile and insists the rule is gone.
+func (c *Client) verifyFirewallRuleRemoved(ctx context.Context, profileName, adapter, name string) error {
+	return c.verifyFirewallProfile(ctx, profileName, func(profile *FirewallProfile) error {
+		rules := profile.Rules[adapter]
+		for i := range rules {
+			if rules[i].Name == name {
+				return &FirewallNotPersistedError{
+					Profile:    profileName,
+					Adapter:    adapter,
+					Rule:       name,
+					Operation:  "delete",
+					Found:      firewallRuleNames(rules),
+					Adapters:   sortedAdapters(profile),
+					NoRulesKey: !profile.HasRulesKey(),
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// verifyFirewallProfile re-reads the profile and runs check against it, retrying
+// a few times before giving up.
+//
+// The retry is not decoration. A rule write ends with Profile.Apply, which makes
+// DSM re-render and reload its packet filter, and a read issued in the middle of
+// that is entitled to answer with what was there a moment ago. Failing on the
+// first disagreement would turn a slow NAS into a broken apply. Failing after a
+// bounded number of tries is the point of the whole check.
+//
+// A read that errors is reported as itself rather than folded into "the rule is
+// missing": a firewall the provider cannot read is a different problem from a
+// firewall that discarded the write, and conflating them would send the reader
+// after the wrong one.
+func (c *Client) verifyFirewallProfile(ctx context.Context, profileName string, check func(*FirewallProfile) error) error {
+	attempts := firewallVerifyAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var last error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(firewallVerifyInterval):
+			}
+		}
+
+		profile, err := c.GetFirewallProfile(ctx, profileName)
+		if err != nil {
+			return fmt.Errorf("read firewall profile %q back after writing it: %w", profileName, err)
+		}
+		last = check(profile)
+		if last == nil {
+			return nil
+		}
+	}
+	return last
+}
+
+// firewallRuleMismatches names the managed fields on which a rule read back from
+// DSM disagrees with the rule that was written.
+//
+// The selectors are compared through the same encoder that wrote them rather
+// than as the strings the operator typed, so a source that DSM stores as an
+// address plus a netmask and returns as a CIDR compares equal, and a normalised
+// IPv6 literal does not read as drift. A selector neither side can model is
+// skipped: this function exists to catch a write DSM ignored, not to second-guess
+// a GeoIP rule the provider never claimed to understand.
+func firewallRuleMismatches(want, got FirewallRule) []string {
+	var out []string
+
+	if want.Enabled != got.Enabled {
+		out = append(out, fmt.Sprintf("enabled: wrote %t, read back %t", want.Enabled, got.Enabled))
+	}
+	if want.Action != got.Action {
+		out = append(out, fmt.Sprintf("action: wrote %q, read back %q", want.Action, got.Action))
+	}
+	if want.Protocol != got.Protocol {
+		out = append(out, fmt.Sprintf("protocol: wrote %q, read back %q", want.Protocol, got.Protocol))
+	}
+
+	if a, aok := firewallPortFingerprint(want); aok {
+		if b, bok := firewallPortFingerprint(got); bok && a != b {
+			out = append(out, fmt.Sprintf("ports: wrote %v, read back %v", want.Ports, got.Ports))
+		}
+	}
+	if a, aok := firewallSourceFingerprint(want); aok {
+		if b, bok := firewallSourceFingerprint(got); bok && a != b {
+			out = append(out, fmt.Sprintf("source: wrote %v, read back %v", want.Sources, got.Sources))
+		}
+	}
+
+	return out
+}
+
+func firewallPortFingerprint(rule FirewallRule) (string, bool) {
+	if rule.PortKind != firewallSelectorModelled {
+		return "", false
+	}
+	group, list, err := portsToWire(rule.Ports)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%d|%s", group, strings.Join(list, ",")), true
+}
+
+func firewallSourceFingerprint(rule FirewallRule) (string, bool) {
+	if rule.SourceKind != firewallSelectorModelled {
+		return "", false
+	}
+	group, list, ipType, err := sourcesToWire(rule.Sources)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%d|%d|%s", group, ipType, strings.Join(list, ",")), true
+}
+
+func firewallRuleNames(rules []FirewallRule) []string {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(rules))
+	for i := range rules {
+		out = append(out, rules[i].Name)
+	}
+	return out
+}
+
+// sortedAdapters lists every adapter key the profile came back with, rules and
+// policies alike, so a diagnostic can show what DSM answered rather than only
+// what was looked for.
+func sortedAdapters(profile *FirewallProfile) []string {
+	seen := map[string]bool{}
+	for adapter := range profile.Rules {
+		seen[adapter] = true
+	}
+	for adapter := range profile.AdapterPolicy {
+		seen[adapter] = true
+	}
+	out := make([]string, 0, len(seen))
+	for adapter := range seen {
+		out = append(out, adapter)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedKeys(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // guardFirewallLockout compares reachability of this client's own session before
@@ -714,10 +1109,11 @@ func (p *FirewallProfile) ruleCount() int {
 
 func (p *FirewallProfile) clone() *FirewallProfile {
 	out := &FirewallProfile{
-		Name:          p.Name,
-		Rules:         make(map[string][]FirewallRule, len(p.Rules)),
-		AdapterPolicy: make(map[string]int, len(p.AdapterPolicy)),
-		raw:           p.raw,
+		Name:            p.Name,
+		Rules:           make(map[string][]FirewallRule, len(p.Rules)),
+		AdapterPolicy:   make(map[string]int, len(p.AdapterPolicy)),
+		rulesKeyPresent: p.rulesKeyPresent,
+		raw:             p.raw,
 	}
 	for adapter, rules := range p.Rules {
 		copied := make([]FirewallRule, len(rules))

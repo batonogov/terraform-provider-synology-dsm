@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -63,7 +64,11 @@ func (r *firewallRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 			"DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. " +
 			"Deleting the last rule of an enabled profile is refused for the same reason; override with `allow_empty_rule_set = true`.\n\n" +
 			"~> The DSM firewall API is undocumented. This resource was written against reverse-engineered field names and has not " +
-			"been verified against physical hardware; see the provider README before using it on a NAS you cannot reach physically.",
+			"been verified against physical hardware; see the provider README before using it on a NAS you cannot reach physically.\n\n" +
+			"~> **A successful response from DSM is not proof.** DSM has been observed answering `success` to a profile write " +
+			"and storing nothing at all (issue #130). Every write and every delete is therefore read back from the NAS before " +
+			"it is reported as done, and a change that did not take becomes an error rather than a resource in state that does " +
+			"not exist on the firewall.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -483,5 +488,69 @@ func appendFirewallDiagnostic(diags *diag.Diagnostics, summary string, err error
 		return
 	}
 
+	var notPersisted *client.FirewallNotPersistedError
+	if errors.As(err, &notPersisted) {
+		diags.AddError(
+			"DSM accepted the firewall change and did not keep it",
+			notPersisted.Error()+"\n\n"+firewallNotPersistedAdvice(notPersisted),
+		)
+		return
+	}
+
+	var shape *client.FirewallProfileShapeError
+	if errors.As(err, &shape) {
+		diags.AddError(
+			"DSM returned a firewall profile this provider does not recognise",
+			shape.Error()+
+				"\n\nNothing was written. The DSM firewall API is undocumented and the shape of this response is one of the "+
+				"parts of it that was inferred rather than captured, so this most likely means your DSM answers differently "+
+				"from the one the client was written against.\n\n"+
+				"Please open an issue at https://github.com/batonogov/terraform-provider-synology-dsm/issues with your exact "+
+				"DSM version (Control Panel -> Info Center) and the raw response of:\n\n"+
+				"    curl -s '<dsm>/webapi/entry.cgi?api=SYNO.Core.Security.Firewall.Profile&version=1&method=get"+
+				"&name=default&_sid=<sid>'\n\n"+
+				"with anything sensitive removed. That response is exactly the missing piece.",
+		)
+		return
+	}
+
 	diags.AddError(summary, err.Error())
+}
+
+// firewallNotPersistedAdvice is the "what now" half of the read-after-write
+// diagnostic.
+//
+// It is long on purpose. The failure it describes is one the provider cannot fix
+// and cannot even fully explain: DSM answered success, the change is not there,
+// and the write contract for this API is reverse-engineered rather than
+// documented. The only useful thing to do with that is to tell the operator
+// precisely what is and is not true right now -- state, the NAS, the other rules
+// of the same apply -- and what to send so it can be diagnosed.
+func firewallNotPersistedAdvice(e *client.FirewallNotPersistedError) string {
+	var b strings.Builder
+
+	b.WriteString("This resource is not in Terraform state, so nothing here claims the rule exists. ")
+	b.WriteString("The write itself may still have landed in part: DSM's firewall API has no per-rule call, so the provider ")
+	b.WriteString("sends the whole profile, and a partly-applied profile write can reorder or drop rules that were already ")
+	b.WriteString("there. Check Control Panel -> Security -> Firewall before the next apply.\n\n")
+
+	b.WriteString("Things worth checking, in the order they are worth checking:\n\n")
+	b.WriteString("  1. Whether the rule is visible in Control Panel -> Security -> Firewall for profile ")
+	b.WriteString(fmt.Sprintf("%q. If it is, this provider is reading the profile back from the wrong place rather than "+
+		"failing to write it.\n", e.Profile))
+	b.WriteString(fmt.Sprintf("  2. Whether adapter %q is the right name on your NAS. DSM names the interface after the "+
+		"device, and a NAS using Open vSwitch calls it ovs_eth0 rather than eth0; a rule written under an adapter key DSM "+
+		"discards disappears exactly like this.\n", e.Adapter))
+	b.WriteString("  3. Whether the account is the built-in admin. Several DSM APIs answer success to another " +
+		"administrator and quietly do nothing.\n")
+	b.WriteString("  4. Whether the firewall page is open in DSM in another browser tab. DSM's own UI holds the profile " +
+		"and can write it back over an API change.\n\n")
+
+	b.WriteString("This is issue #130 (https://github.com/batonogov/terraform-provider-synology-dsm/issues/130). ")
+	b.WriteString("The write contract for SYNO.Core.Security.Firewall.Profile is reconstructed from third-party captures ")
+	b.WriteString("and has never been verified against physical hardware, so a report here is genuinely useful: please ")
+	b.WriteString("include your exact DSM version and model, whether the account is the built-in admin, and the raw ")
+	b.WriteString("response of SYNO.Core.Security.Firewall.Profile `get`.")
+
+	return b.String()
 }

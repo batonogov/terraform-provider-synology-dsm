@@ -147,7 +147,87 @@ func (c *Client) SetFirewall(ctx context.Context, req SetFirewallRequest) (*Fire
 	if err != nil {
 		return nil, err
 	}
+
+	// The read-back is here anyway, so it may as well be believed rather than
+	// merely returned. Both writes above are reconstructed rather than captured
+	// -- the switch's parameter names are inferred from what `get` answers with,
+	// and the profile write is the same call that silently dropped every rule in
+	// issue #130 -- so a success that changed nothing is a shape this code has to
+	// be able to report. Reporting it as a completed apply would leave Terraform
+	// claiming a firewall configuration the NAS does not have.
+	if err := verifyFirewallSettings(req, desired, policy, settings, profile); err != nil {
+		return nil, err
+	}
+
 	return &FirewallSettingsResult{Settings: settings, Profile: profile, LockoutWarning: warning}, nil
+}
+
+// verifyFirewallSettings compares the state DSM reports after the write with the
+// state that was asked for.
+//
+// Only what was requested is checked. An adapter the caller said nothing about
+// is not this write's business, and a profile that was not switched to is not
+// evidence of anything.
+func verifyFirewallSettings(
+	req SetFirewallRequest,
+	desired FirewallSettings,
+	policy map[string]int,
+	settings *FirewallSettings,
+	profile *FirewallProfile,
+) error {
+	var mismatches []string
+
+	if settings.Enabled != desired.Enabled {
+		mismatches = append(mismatches,
+			fmt.Sprintf("enabled: asked for %t, DSM reports %t", desired.Enabled, settings.Enabled))
+	}
+	if settings.ActiveProfile != desired.ActiveProfile {
+		mismatches = append(mismatches,
+			fmt.Sprintf("active profile: asked for %q, DSM reports %q", desired.ActiveProfile, settings.ActiveProfile))
+	}
+
+	for _, adapter := range sortedPolicyAdapters(policy) {
+		want := policy[adapter]
+		got, ok := profile.AdapterPolicy[adapter]
+		switch {
+		case !ok:
+			mismatches = append(mismatches,
+				fmt.Sprintf("default policy for adapter %q: asked for %q, DSM reports no policy for that adapter at all",
+					adapter, FirewallPolicyName(want)))
+		case got != want:
+			mismatches = append(mismatches,
+				fmt.Sprintf("default policy for adapter %q: asked for %q, DSM reports %q",
+					adapter, FirewallPolicyName(want), FirewallPolicyName(got)))
+		}
+	}
+
+	if len(mismatches) == 0 {
+		return nil
+	}
+	return &FirewallSettingsNotPersistedError{Profile: req.Profile, Mismatches: mismatches}
+}
+
+func sortedPolicyAdapters(policy map[string]int) []string {
+	out := make([]string, 0, len(policy))
+	for adapter := range policy {
+		out = append(out, adapter)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// FirewallSettingsNotPersistedError reports a profile-level firewall write DSM
+// accepted and did not perform. It is the SetFirewall counterpart of
+// FirewallNotPersistedError; see issue #130.
+type FirewallSettingsNotPersistedError struct {
+	Profile    string
+	Mismatches []string
+}
+
+func (e *FirewallSettingsNotPersistedError) Error() string {
+	return fmt.Sprintf(
+		"DSM reported success but the firewall settings read back differently for profile %q: %s",
+		e.Profile, strings.Join(e.Mismatches, "; "))
 }
 
 // setFirewallSwitch writes SYNO.Core.Security.Firewall itself: the global on/off

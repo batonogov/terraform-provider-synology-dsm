@@ -449,6 +449,21 @@ func appendFirewallSettingsDiagnostic(diags *diag.Diagnostics, summary string, e
 		return
 	}
 
+	var notPersisted *client.FirewallSettingsNotPersistedError
+	if errors.As(err, &notPersisted) {
+		diags.AddError(
+			"DSM accepted the firewall settings and did not keep them",
+			notPersisted.Error()+
+				"\n\nThe call was made and answered with success; reading the settings straight back showed something else, "+
+				"so this apply is reported as a failure rather than recorded as done. The write contract for "+
+				"SYNO.Core.Security.Firewall is reverse-engineered and has never been verified against physical hardware.\n\n"+
+				"Check Control Panel -> Security -> Firewall for what the NAS actually has, and please report this at "+
+				"https://github.com/batonogov/terraform-provider-synology-dsm/issues with your exact DSM version, the NAS "+
+				"model, and whether the account is the built-in admin (issue #130).",
+		)
+		return
+	}
+
 	diags.AddError(summary, err.Error())
 }
 
