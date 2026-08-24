@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.5.0...v0.6.0) (2026-08-24)
+
+
+### Features
+
+* dsm_firewall — global switch and default policy ([#121](https://github.com/batonogov/terraform-provider-synology-dsm/issues/121), [#123](https://github.com/batonogov/terraform-provider-synology-dsm/issues/123)) ([#127](https://github.com/batonogov/terraform-provider-synology-dsm/issues/127)) ([19f0a25](https://github.com/batonogov/terraform-provider-synology-dsm/commit/19f0a2529493f4ba7fa68cb6a0851ebcc5cc59ee))
+* log the DSM exchange under tflog.Debug, with secrets redacted ([#135](https://github.com/batonogov/terraform-provider-synology-dsm/issues/135)) ([960240a](https://github.com/batonogov/terraform-provider-synology-dsm/commit/960240a917e806017ad7c80b867c5e9f087546a4))
+
+
+### Bug Fixes
+
+* **ci:** give virtual DSM the runtime it needs and gate tests by env ([#128](https://github.com/batonogov/terraform-provider-synology-dsm/issues/128)) ([#132](https://github.com/batonogov/terraform-provider-synology-dsm/issues/132)) ([2e19991](https://github.com/batonogov/terraform-provider-synology-dsm/commit/2e1999116b334cc3a8f11e5ca7a4bc9fb80dc2b2))
+* firewall rules keep their configured priority order ([#122](https://github.com/batonogov/terraform-provider-synology-dsm/issues/122)) ([#125](https://github.com/batonogov/terraform-provider-synology-dsm/issues/125)) ([c07aadd](https://github.com/batonogov/terraform-provider-synology-dsm/commit/c07aadd118f98622ade351600b204c602066f27a))
+* never report a firewall write DSM silently discarded ([#134](https://github.com/batonogov/terraform-provider-synology-dsm/issues/134)) ([39f14b1](https://github.com/batonogov/terraform-provider-synology-dsm/commit/39f14b18c44bef5a9fdddd7381476f7baaae3197)), closes [#130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130)
+* read and write the firewall profile shape DSM actually speaks ([#130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130)) ([#136](https://github.com/batonogov/terraform-provider-synology-dsm/issues/136)) ([fa7c60c](https://github.com/batonogov/terraform-provider-synology-dsm/commit/fa7c60c53a4f5f5f10dbb35aa5955a97698dfaac))
+* Read removes a vanished object from state instead of erroring ([#131](https://github.com/batonogov/terraform-provider-synology-dsm/issues/131)) ([#133](https://github.com/batonogov/terraform-provider-synology-dsm/issues/133)) ([fb0a6e9](https://github.com/batonogov/terraform-provider-synology-dsm/commit/fb0a6e9551ade6b96456ec8cd60662642d8413f7))
+
 ## [0.5.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.4.0...v0.5.0) (2026-08-14)
 
 
