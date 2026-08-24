@@ -148,6 +148,15 @@ Every resource follows the same structure (see `resource_group.go` as the cleane
 4. **Read must set ALL state fields** from API response (including `ID` and `Name`) — required for import to work
 5. Read uses `state.ID` with fallback to `state.Name` for lookup after import
 6. Import: `resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)`
+7. **Read removes a vanished object from state instead of erroring** — `if removeIfGone(ctx, resp, err, "<kind>") { return }` before the `AddError`. This is Terraform's contract, and both halves of it bite (issue #131)
+
+**"Gone" and "could not ask" are different answers, and Read must not conflate them.** A refresh touches every resource before anything is planned, so a Read that errors on a deleted object aborts the whole plan — including the resources that would have fixed the drift — and the only way out is editing the state file by hand. Removing the resource on any *other* failure is worse: a timeout, an expired session (119), a permission refusal (105) or a malformed request says nothing about whether the object exists, and dropping it from state would plan a re-create of a shared folder or firewall rule that is still there.
+
+The line is drawn in the client, not in the provider. `client.NotFoundError` (`client.IsNotFound`, `errors.As`) is constructed **only where absence is established**: DSM answered, the answer was well formed, and the object was not in it. Never from the rendered message — the code is the contract, the wording is presentation — and never from a code that describes the caller. Every `Err*NotFound` sentinel is a `*NotFoundError`, so `errors.Is(err, client.ErrFileNotFound)` and `client.IsNotFound(err)` both work; `ErrAccessControlProfileNotFound` is deliberately **not** one, because a missing *referenced* object the provider does not own is a configuration error, not drift.
+
+Two APIs have no "no such object" code at all — `SYNO.Core.Share` and `SYNO.Core.Group` — so `GetShare`/`GetGroup` confirm a refused `get` by listing (`absenceConfirmedBy` in `errors.go`). The confirmation runs only when DSM itself answered with an `*APIError`, and a second read that also fails confirms nothing: the original error is returned. Never the other way round.
+
+Resources whose object cannot go missing — `dsm_system_settings`, `dsm_notification_mail`, `dsm_user_home_service`, `dsm_firewall` — are whole-box settings and keep erroring. Data sources always error on absence: there is no state to reconcile.
 
 ## Conventions
 

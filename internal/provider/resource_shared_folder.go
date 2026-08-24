@@ -422,6 +422,9 @@ func (r *sharedFolderResource) Read(ctx context.Context, req resource.ReadReques
 
 	share, err := r.client.GetShare(ctx, name)
 	if err != nil {
+		if removeIfGone(ctx, resp, err, "shared folder") {
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Failed to read shared folder",
 			err.Error(),

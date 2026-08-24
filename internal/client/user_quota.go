@@ -62,7 +62,14 @@ func (c *Client) GetUserQuota(ctx context.Context, shareName, username string) (
 		}
 	}
 
-	return nil, fmt.Errorf("quota not found for user %q on share %q", username, shareName)
+	// The share's quota list came back and this user was not in it: established
+	// absence. A failed list — the share is gone, the API is unsupported — is
+	// returned above and stays an error.
+	return nil, &NotFoundError{
+		Kind:  "user quota",
+		Name:  username,
+		Scope: fmt.Sprintf("on share %q", shareName),
+	}
 }
 
 func (c *Client) SetUserQuota(ctx context.Context, req SetUserQuotaRequest) (*UserQuota, error) {

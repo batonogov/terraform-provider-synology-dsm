@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var ErrContainerProjectNotFound = errors.New("Container Manager project not found")
+var ErrContainerProjectNotFound = &NotFoundError{Kind: "Container Manager project"}
 
 var (
 	containerProjectPollInterval = 2 * time.Second

@@ -127,6 +127,9 @@ func (r *groupResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 	group, err := r.client.GetGroup(ctx, name)
 	if err != nil {
+		if removeIfGone(ctx, resp, err, "group") {
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Failed to read group",
 			err.Error(),

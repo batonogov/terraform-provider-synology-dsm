@@ -15,7 +15,7 @@ import (
 // ErrScheduledTaskNotFound is returned when DSM has no task with the requested
 // id. Task Scheduler answers a missing id with an empty payload rather than a
 // dedicated error code, so the client synthesises this error instead.
-var ErrScheduledTaskNotFound = errors.New("scheduled task not found")
+var ErrScheduledTaskNotFound = &NotFoundError{Kind: "scheduled task"}
 
 // Task Scheduler wire contract.
 //

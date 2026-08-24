@@ -156,6 +156,9 @@ func (r *sharePermissionResource) Read(ctx context.Context, req resource.ReadReq
 
 	perm, err := r.client.GetSharePermission(ctx, shareName, ugType, principal)
 	if err != nil {
+		if removeIfGone(ctx, resp, err, "share permission") {
+			return
+		}
 		resp.Diagnostics.AddError("Failed to read share permission", err.Error())
 		return
 	}

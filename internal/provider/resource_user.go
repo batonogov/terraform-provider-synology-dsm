@@ -186,6 +186,9 @@ func (r *userResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 
 	user, err := r.client.GetUser(ctx, name)
 	if err != nil {
+		if removeIfGone(ctx, resp, err, "user") {
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Failed to read user",
 			err.Error(),

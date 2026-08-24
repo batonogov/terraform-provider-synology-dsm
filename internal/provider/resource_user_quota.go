@@ -151,6 +151,9 @@ func (r *userQuotaResource) Read(ctx context.Context, req resource.ReadRequest, 
 
 	q, err := r.client.GetUserQuota(ctx, shareName, username)
 	if err != nil {
+		if removeIfGone(ctx, resp, err, "user quota") {
+			return
+		}
 		resp.Diagnostics.AddError("Failed to read user quota", err.Error())
 		return
 	}

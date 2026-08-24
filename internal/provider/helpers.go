@@ -10,7 +10,9 @@ import (
 
 	"github.com/batonogov/terraform-provider-synology-dsm/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // dsmVolumePath matches an absolute volume path such as /volume1/docker. File
@@ -167,4 +169,49 @@ func stringListOrNull(ctx context.Context, values []string) (types.List, diag.Di
 		return types.ListNull(types.StringType), nil
 	}
 	return types.ListValueFrom(ctx, types.StringType, values)
+}
+
+// removeIfGone implements the half of Terraform's Read contract that this
+// provider used to get wrong (issue #131): when the remote object no longer
+// exists, Read drops the resource from state and returns no error, so the next
+// plan schedules a re-create.
+//
+// The distinction it draws is the entire point, and it cuts both ways.
+//
+// Erroring on a deleted object is not a local failure. A plan refreshes every
+// resource before it plans anything, so one resource whose Read fails aborts the
+// whole plan — including the resources that would have corrected the drift — and
+// the only way out is to edit the state file by hand.
+//
+// Removing a resource on any *other* failure is worse. A timeout, an expired
+// session, a permission refusal or a malformed request says nothing about
+// whether the object is there; treating those as "gone" would drop a live
+// resource out of the practitioner's state and plan a re-create of something
+// that already exists — which, for a shared folder or a firewall rule, is a
+// destructive change nobody asked for. Those keep surfacing as errors, loudly.
+//
+// The dividing line lives in the client: only a *client.NotFoundError, built
+// where DSM answered and the object was demonstrably not in the answer, reaches
+// here. See client.NotFoundError.
+//
+// It reports whether it handled the error, so callers read:
+//
+//	if err != nil {
+//		if removeIfGone(ctx, resp, err, "firewall rule") {
+//			return
+//		}
+//		resp.Diagnostics.AddError("Failed to read firewall rule", err.Error())
+//		return
+//	}
+func removeIfGone(ctx context.Context, resp *resource.ReadResponse, err error, kind string) bool {
+	if !client.IsNotFound(err) {
+		return false
+	}
+
+	tflog.Warn(ctx, "Removing a resource from state: it no longer exists in DSM", map[string]interface{}{
+		"kind":   kind,
+		"reason": err.Error(),
+	})
+	resp.State.RemoveResource(ctx)
+	return true
 }

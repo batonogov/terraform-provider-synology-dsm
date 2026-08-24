@@ -45,6 +45,11 @@ func (c *Client) GetGroup(ctx context.Context, name string) (*Group, error) {
 
 	data, err := c.DoAPI(ctx, "SYNO.Core.Group", "1", "get", params)
 	if err != nil {
+		if absenceConfirmedBy(ctx, err, func(ctx context.Context) (bool, error) {
+			return c.groupExists(ctx, name)
+		}) {
+			return nil, &NotFoundError{Kind: "group", Name: name}
+		}
 		return nil, fmt.Errorf("get group %q: %w", name, err)
 	}
 
@@ -65,7 +70,9 @@ func (c *Client) GetGroup(ctx context.Context, name string) (*Group, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("group %q not found", name)
+	// DSM answered with a well-formed payload that does not contain the group:
+	// established absence.
+	return nil, &NotFoundError{Kind: "group", Name: name}
 }
 
 func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
@@ -150,4 +157,20 @@ func parseGroup(raw json.RawMessage) (*Group, error) {
 	}
 
 	return g, nil
+}
+
+// groupExists answers the same question as GetGroup through `list`, which is
+// what makes a failed `get` decidable: DSM has no documented code for a group
+// that is not there.
+func (c *Client) groupExists(ctx context.Context, name string) (bool, error) {
+	groups, err := c.ListGroups(ctx)
+	if err != nil {
+		return false, err
+	}
+	for i := range groups {
+		if groups[i].Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }

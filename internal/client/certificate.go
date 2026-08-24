@@ -27,7 +27,7 @@ const (
 
 // ErrCertificateNotFound reports that DSM has no certificate with the given id
 // or description, so a resource can drop it from state instead of failing.
-var ErrCertificateNotFound = errors.New("DSM certificate not found")
+var ErrCertificateNotFound = &NotFoundError{Kind: "DSM certificate"}
 
 // DSM runs the whole ACME exchange inline inside the create request rather than
 // handing back a task id, so issuance is a single long-blocking call. These are
@@ -596,7 +596,7 @@ const certificateServiceAPI = "SYNO.Core.Certificate.Service"
 // ErrCertificateServiceNotFound reports that no installed certificate is
 // currently serving the named service, so the binding resource can treat it as
 // "not bound yet" rather than an error.
-var ErrCertificateServiceNotFound = errors.New("DSM certificate service binding not found")
+var ErrCertificateServiceNotFound = &NotFoundError{Kind: "DSM certificate service binding"}
 
 // CertificateServiceBinding is the certificate currently serving a service.
 type CertificateServiceBinding struct {

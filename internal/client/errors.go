@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -140,4 +141,82 @@ func describeAPIError(api string, code int) (string, bool) {
 	}
 	desc, ok := commonAPIErrors[code]
 	return desc, ok
+}
+
+// NotFoundError reports that DSM answered the request and the object simply is
+// not there.
+//
+// It exists to keep one distinction sharp, because Terraform's Read contract
+// hangs off it: an object that is gone from DSM must leave state, so the next
+// plan re-creates it, while every other failure — a broken connection, an
+// expired session, a permission refusal, a malformed request — must surface as
+// an error. Collapsing the two in either direction is a real bug: erroring on a
+// deleted object breaks `terraform plan` for the whole configuration (issue
+// #131), and treating a network failure as "gone" silently drops a resource
+// that still exists and plans a re-create of it.
+//
+// Only construct one where absence is *established*, never where it is merely
+// plausible: DSM answered, the answer was well formed, and the object was not
+// in it. When DSM refuses in a way that leaves the question open, return the
+// refusal.
+type NotFoundError struct {
+	// Kind is the sort of object, in the words the message should use
+	// ("firewall rule", "user", "DSM package").
+	Kind string
+	// Name identifies the object; empty for a singleton.
+	Name string
+	// Scope is an optional trailing qualifier such as
+	// `in profile "default" adapter "global"`.
+	Scope string
+}
+
+func (e *NotFoundError) Error() string {
+	switch {
+	case e.Name == "" && e.Scope == "":
+		return fmt.Sprintf("%s not found", e.Kind)
+	case e.Scope == "":
+		return fmt.Sprintf("%s %q not found", e.Kind, e.Name)
+	default:
+		return fmt.Sprintf("%s %q not found %s", e.Kind, e.Name, e.Scope)
+	}
+}
+
+// IsNotFound reports whether err, or any error it wraps, means "DSM answered,
+// and the object is not there".
+//
+// Deliberately no *APIError code is mapped here. A DSM code such as 105
+// ("no permission") or 119 ("session invalid") describes the caller, not the
+// object, and a resource that removed itself from state on those would delete
+// working infrastructure from the practitioner's state file on a transient
+// failure. Where a code does establish absence for one API — SYNO.Core.User's
+// 3106, say — the client turns it into a *NotFoundError at that call site,
+// where the API is known.
+func IsNotFound(err error) bool {
+	var notFound *NotFoundError
+	return errors.As(err, &notFound)
+}
+
+// absenceConfirmedBy reports whether an ambiguous failure from a `get` really
+// means the object is gone, by asking a second, independent read.
+//
+// DSM has no documented "no such object" code for SYNO.Core.Group or
+// SYNO.Core.Share, and the rendered message is presentation rather than
+// contract, so absence is never inferred from the failure itself — it is
+// confirmed by listing, an API this provider already depends on. Two properties
+// keep the confirmation safe in the direction that matters:
+//
+//   - it only runs when DSM itself answered, i.e. when the failure carries an
+//     *APIError. A connection that never got a reply is not an answer about the
+//     object, and is returned unchanged;
+//   - if the second read also fails — expired session, unreachable NAS —
+//     nothing is confirmed and the caller keeps the original error. Never the
+//     other way round: a Read that dropped a resource from state on a network
+//     blip would plan a re-create of infrastructure that is still running.
+func absenceConfirmedBy(ctx context.Context, err error, exists func(context.Context) (bool, error)) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	found, listErr := exists(ctx)
+	return listErr == nil && !found
 }

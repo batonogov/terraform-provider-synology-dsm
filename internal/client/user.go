@@ -144,7 +144,9 @@ func (c *Client) GetUser(ctx context.Context, name string) (*User, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("user %q not found", name)
+	// DSM listed its accounts and this one was not among them: established
+	// absence, distinct from the list call itself failing.
+	return nil, &NotFoundError{Kind: "user", Name: name}
 }
 
 func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
