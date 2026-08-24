@@ -331,37 +331,29 @@ func TestClient_GetFirewallProfile_AcceptsGenuinelyEmptyProfile(t *testing.T) {
 	}
 }
 
-// The adapter-keyed shape is the leading explanation for issue #130: two
-// published DSM clients send and read {"name": ..., "<adapter>": {"policy": ...,
-// "rules": [...]}} over HTTP, rather than the {"rules": {...},
-// "adapterPolicyMap": {...}} shape Synology's own fwDB.hpp uses on disk. This
-// client cannot write that shape without a capture to go on, but it must say so
-// by name instead of reading the profile as empty.
-func TestClient_GetFirewallProfile_NamesTheAdapterKeyedShape(t *testing.T) {
+// A profile that is in neither recognised shape is still refused, and the
+// refusal names both shapes so the reader can see which one theirs is closest
+// to. The adapter-keyed shape itself is parsed now; see
+// firewall_adapter_keyed_test.go.
+func TestClient_GetFirewallProfile_ShapeErrorNamesBothShapes(t *testing.T) {
 	c, _ := newProfileResponseServer(t, map[string]interface{}{
-		"name": "default",
-		"global": map[string]interface{}{
-			"policy": "deny",
-			"rules": []interface{}{
-				map[string]interface{}{"name": "allow lan", "policy": "allow"},
-			},
-		},
+		"name":  "default",
+		"total": float64(0),
 	})
 
 	_, err := c.GetFirewallProfile(context.Background(), "default")
 	if err == nil {
-		t.Fatal("expected an error for the adapter-keyed profile shape")
+		t.Fatal("expected an error for a response in neither shape")
 	}
 
 	var shape *FirewallProfileShapeError
 	if !errors.As(err, &shape) {
 		t.Fatalf("expected *FirewallProfileShapeError, got %T: %v", err, err)
 	}
-	if len(shape.AdapterKeyed) != 1 || shape.AdapterKeyed[0] != FirewallAdapterGlobal {
-		t.Fatalf("AdapterKeyed = %v, want [%s]", shape.AdapterKeyed, FirewallAdapterGlobal)
-	}
-	if !strings.Contains(err.Error(), "#130") {
-		t.Errorf("message does not point at the issue: %s", err.Error())
+	for _, want := range []string{"adapterPolicyMap", "policy"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message does not mention %q: %s", want, err.Error())
+		}
 	}
 }
 

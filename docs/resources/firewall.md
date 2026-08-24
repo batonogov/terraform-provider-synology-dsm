@@ -8,6 +8,7 @@ description: |-
   Individual rules are managed with dsm_firewall_rule.
   ~> The firewall can lock you out, and this resource is the fastest way to do it. Before switching the firewall on, switching profiles, or tightening a default policy, the provider replays the resulting profile against its own DSM session and refuses the change if that session would be denied. Set allow_lockout = true to override. Recovering from a real lockout needs physical access to the NAS.
   ~> SYNO.Core.Security.Firewall is undocumented, and this provider has never run its write against a NAS. The method and its two fields are confirmed from Synology's own webapi descriptor and firewall library; the HTTP verb and the string encoding are not, so the provider tries each in turn and reports clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.
+  ~> default_policy is written by sending the whole profile back, and on a DSM whose profile is adapter-keyed (the shape captured from 7.2.2) the provider cannot encode a firewall rule. A profile that already holds rules therefore cannot have its default policy changed from here until that encoding is known — the alternative is sending a payload that crashes DSM's request parser. A profile with no rules is written normally, and that round trip is confirmed. See issue #130 https://github.com/batonogov/terraform-provider-synology-dsm/issues/130.
 ---
 
 # dsm_firewall (Resource)
@@ -23,6 +24,8 @@ Individual rules are managed with `dsm_firewall_rule`.
 ~> **The firewall can lock you out, and this resource is the fastest way to do it.** Before switching the firewall on, switching profiles, or tightening a default policy, the provider replays the resulting profile against its own DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. Recovering from a real lockout needs physical access to the NAS.
 
 ~> `SYNO.Core.Security.Firewall` is undocumented, and this provider has never run its **write** against a NAS. The method and its two fields are confirmed from Synology's own webapi descriptor and firewall library; the HTTP verb and the string encoding are not, so the provider tries each in turn and reports clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.
+
+~> `default_policy` is written by sending the whole profile back, and on a DSM whose profile is *adapter-keyed* (the shape captured from 7.2.2) the provider cannot encode a firewall rule. A profile that already holds rules therefore cannot have its default policy changed from here until that encoding is known — the alternative is sending a payload that crashes DSM's request parser. A profile with no rules is written normally, and that round trip is confirmed. See [issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130).
 
 ## Example Usage
 

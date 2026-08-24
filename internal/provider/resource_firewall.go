@@ -64,7 +64,13 @@ func (r *firewallResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"~> `SYNO.Core.Security.Firewall` is undocumented, and this provider has never run its **write** against a " +
 			"NAS. The method and its two fields are confirmed from Synology's own webapi descriptor and firewall " +
 			"library; the HTTP verb and the string encoding are not, so the provider tries each in turn and reports " +
-			"clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.",
+			"clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.\n\n" +
+			"~> `default_policy` is written by sending the whole profile back, and on a DSM whose profile is *adapter-keyed* " +
+			"(the shape captured from 7.2.2) the provider cannot encode a firewall rule. A profile that already holds rules " +
+			"therefore cannot have its default policy changed from here until that encoding is known — the alternative is " +
+			"sending a payload that crashes DSM's request parser. A profile with no rules is written normally, and that " +
+			"round trip is confirmed. See " +
+			"[issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130).",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -445,6 +451,20 @@ func appendFirewallSettingsDiagnostic(diags *diag.Diagnostics, summary string, e
 			empty.Error()+
 				"\n\nNothing was written. Create the rules first and switch the firewall on in a second step, or set "+
 				"allow_empty_rule_set = true if denying everything is really the intent.",
+		)
+		return
+	}
+
+	var unsupported *client.FirewallRuleWriteUnsupportedError
+	if errors.As(err, &unsupported) {
+		diags.AddError(
+			"This DSM's firewall profile cannot be rewritten while it holds rules",
+			unsupported.Error()+
+				"\n\nNothing was written. The default policy is written by sending the whole profile back, so a profile that "+
+				"already holds rules cannot be changed until the rule encoding is known — even though the policy itself is "+
+				"confirmed to round-trip. Set the default policy in Control Panel -> Security -> Firewall for now, and see "+
+				"https://github.com/batonogov/terraform-provider-synology-dsm/issues/130 for the one capture that would lift "+
+				"this.",
 		)
 		return
 	}

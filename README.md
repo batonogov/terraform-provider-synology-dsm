@@ -83,15 +83,26 @@ would have to carry, is in [the provider documentation](docs/index.md#scope-what
 
 **The write side of the global switch is reconstructed, not captured.** `SYNO.Core.Security.Firewall` is undocumented. Its `set` method and its two-field shape are confirmed from primary sources — DSM's own webapi descriptor lists exactly `{set, get}` on version 1, and Synology's `synofirewall/synoFW.hpp` models the global state as a status flag plus an active profile name — and the parameter names are corroborated by the one published implementation that writes this API against DSM 7.2/7.3. But nothing here has been run against a NAS from this repository, and two details are genuine guesses: the HTTP verb, and whether `profile_name` travels plain or JSON-quoted. Both have a fallback rather than a bet — POST then GET, then a retry with the other encoding — and DSM rejecting all of them produces an error that says so. Reading the firewall is unaffected. `dsm_firewall_rule` writes through the separate `Firewall.Profile` API, which has a problem of its own — see below. Acceptance tests for `dsm_firewall` are gated behind `DSM_ACC_FIREWALL=1` and never switch the firewall on.
 
-**Writing rules does not work on every DSM 7, and the provider now says so instead of pretending.** [Issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130) reports five rules created in one apply, five successful responses from DSM, and a profile that afterwards holds no rules at all. The cause is not established: DSM's firewall API is undocumented, no public capture of `SYNO.Core.Security.Firewall.Profile get` from real hardware exists, and the two leading explanations (rules living behind the separate `SYNO.Core.Security.Firewall.Rules` API, or an HTTP profile shaped differently from the one on disk) cannot be told apart without one. What has changed is that a write DSM discards is no longer reported as a created resource: every write and every delete is read back from the NAS, and a change that did not take fails the apply with a diagnostic naming what DSM actually answered. A profile response the provider does not recognise is likewise an error rather than an empty profile — reading it as empty and writing it back would have replaced every rule on the NAS with the one being added.
+**Writing rules does not work on DSM 7.2.2, and the provider refuses rather than pretends.** [Issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130) reported five rules created in one apply, five successful responses from DSM, and a profile that afterwards held no rules at all. Half of that is now understood, from a contract captured on a live virtual DSM 7.2.2:
 
-If you hit this, the single most useful thing you can attach to an issue is the raw body of:
+- **Confirmed, and fixed.** `SYNO.Core.Security.Firewall.Profile get` answers in an *adapter-keyed* shape — `{"name": "default", "global": {"policy": "none", "rules": []}}` — where each network adapter is a top-level key and the fall-through policy is a **string** (`none` / `allow` / `drop`). There is no `rules` key and no `adapterPolicyMap` key at the top level at all. The provider used to send exactly those two, and DSM answered `success: true` and stored nothing. It now reads and writes whichever of the two shapes a given DSM answers in, chosen from the response itself rather than from a version number. Writing the default policy in the adapter-keyed shape is confirmed to round-trip, so **`dsm_firewall` works**.
+- **Still unknown, and deliberately not guessed.** How a *rule* is encoded inside that shape. Every candidate form — the on-disk object from Synology's own `fwDB.hpp`, the string-enum variant two published clients send, snake_case, and even a bare `[{}]` — makes DSM's request parser crash: synoscgi answers an HTML error page instead of JSON and the DSM web interface goes down with it. The provider therefore **refuses to send a rule** on a DSM that speaks this shape, with an error that says so, rather than taking somebody's NAS down to find out. `dsm_firewall_rule` still writes on a DSM that answers in the on-disk `{rules, adapterPolicyMap}` shape, and the `dsm_firewall_rule` / `dsm_firewall_rules` data sources read rules on either.
+
+Independently of the shape, DSM's `success` is no longer treated as evidence: every write and every delete is read back from the NAS, and a change that did not take fails the apply with a diagnostic naming what DSM actually answered. A profile response in neither known shape is an error rather than an empty profile — reading it as empty and writing it back would have replaced every rule on the NAS with the one being added.
+
+Lifting the rule limitation needs exactly one artefact: a profile that actually holds rules, from a NAS where they were created in Control Panel. Either
+
+```
+cat /usr/syno/etc/firewall.d/*.json
+```
+
+over SSH, or the raw body of
 
 ```
 curl -s '<dsm>/webapi/entry.cgi?api=SYNO.Core.Security.Firewall.Profile&version=1&method=get&name=default&_sid=<sid>&SynoToken=<token>'
 ```
 
-together with your DSM version, the NAS model, and whether the account is the built-in `admin`.
+together with your DSM version, the NAS model, and whether the account is the built-in `admin`. Attach it to [issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130).
 
 The safe order is: create the rules with the firewall off, apply, confirm the rules read back as intended, and only then set `enabled = true`.
 

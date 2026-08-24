@@ -52,6 +52,9 @@ const (
 	fwPolicyAllow = 0
 	fwPolicyDrop  = 1
 	fwPolicyNone  = 2
+	// fwPolicyPartial is FW_POLICY_PARTIAL. DSM never answers with it in any
+	// captured response; it exists here so the string mapping is total.
+	fwPolicyPartial = 3
 
 	fwIPTypeV4  = 0
 	fwIPTypeV6  = 1
@@ -123,11 +126,35 @@ type FirewallRule struct {
 	raw map[string]interface{}
 }
 
+// firewallProfileShape records which of the two wire forms a profile was read
+// in, so a write can answer in the same one.
+//
+// The provider's internal model is the same either way — rule lists and a policy
+// per adapter — but the two forms are not interchangeable on the wire, and DSM
+// answers `success: true` to the one it does not understand while storing
+// nothing. That silent no-op is issue #130, so the shape a profile arrived in is
+// carried through to the write rather than assumed.
+type firewallProfileShape int
+
+const (
+	// firewallShapeAdapterKeyed is what a live DSM answers with:
+	// {"name": "default", "global": {"policy": "none", "rules": []},
+	//  "eth0": {"policy": "drop", "rules": [...]}}.
+	// Adapters are top-level keys and the policy is a string. CONFIRMED against
+	// virtual DSM 7.2.2, including a write round trip for the policy
+	// (.pi/recon-firewall-vdsm-2026-08-24.md).
+	firewallShapeAdapterKeyed firewallProfileShape = iota
+
+	// firewallShapeRulesMap is the shape Synology's own fwDB.hpp uses on disk:
+	// {"name": ..., "rules": {<adapter>: [...]}, "adapterPolicyMap": {<adapter>: int}}.
+	// CONFIRMED as the on-disk form and as what libsynofirewall serialises; never
+	// observed over HTTP. Kept because the webapi shim that translates between the
+	// two is not published, so another DSM build may well speak it.
+	firewallShapeRulesMap
+)
+
 // FirewallProfile is a whole DSM firewall profile: rule lists keyed by network
 // adapter, plus the fall-through policy for each adapter.
-//
-// CONFIRMED shape: {"name": ..., "rules": {"global": [...], "eth0": [...]},
-// "adapterPolicyMap": {"global": 2, "eth0": 1}}.
 type FirewallProfile struct {
 	Name string
 	// Rules is adapter name to that adapter's ordered rule list.
@@ -136,14 +163,27 @@ type FirewallProfile struct {
 	// drop (1), or none (2). There is no global default — this map is it.
 	AdapterPolicy map[string]int
 
-	// rulesKeyPresent records whether DSM's response carried a `rules` key at
-	// all, as opposed to carrying one that was empty. The two look identical
-	// once parsed and mean very different things: an empty profile, or a DSM
-	// that does not keep rules inside the profile object. DSM's own webapi
-	// descriptor lists a separate SYNO.Core.Security.Firewall.Rules API with
-	// `load` / `save_start` / `save_status` / `save_stop`, so the second reading
-	// is not far-fetched, and a diagnostic that cannot tell them apart sends the
-	// reader looking in the wrong place.
+	// shape is the wire form DSM answered in, and the one a write will use.
+	shape firewallProfileShape
+
+	// unparsedRules counts, per adapter, the entries of DSM's rule array that
+	// were not JSON objects and so did not become rules.
+	//
+	// It exists so a write cannot quietly drop them. The number is normally zero,
+	// and the alternative — comparing the model against the raw array at write
+	// time — cannot work, because a delete legitimately makes the model shorter
+	// than what DSM sent.
+	unparsedRules map[string]int
+
+	// rulesKeyPresent records whether DSM's response mentioned rules at all, as
+	// opposed to mentioning an empty list. The two look identical once parsed and
+	// mean very different things: an empty profile, or a DSM that does not keep
+	// rules inside the profile object. DSM's own webapi descriptor lists a
+	// separate SYNO.Core.Security.Firewall.Rules API with `load` / `save_start` /
+	// `save_status` / `save_stop`, so the second reading is not far-fetched, and
+	// a diagnostic that cannot tell them apart sends the reader looking in the
+	// wrong place. In the adapter-keyed shape the key lives inside each adapter
+	// block rather than at the top level.
 	rulesKeyPresent bool
 
 	raw map[string]interface{}
@@ -362,18 +402,14 @@ func (e *FirewallNotPersistedError) Error() string {
 // rule being added. Erroring on the read is the difference between "the provider
 // could not read your firewall" and "the provider deleted your firewall".
 //
-// The `name` request parameter and the response envelope are both INFERRED (see
-// GetFirewallProfile), so this is the error that will surface a DSM whose shape
-// differs from the one this client was written against.
+// Two shapes are recognised, and neither of them is a guess any more: the
+// adapter-keyed one a live DSM 7.2.2 answers with, and the
+// {rules, adapterPolicyMap} one Synology's own fwDB.hpp stores on disk. A third
+// would surface here.
 type FirewallProfileShapeError struct {
 	Profile string
 	// Keys is what DSM actually returned at the top level, sorted.
 	Keys []string
-	// AdapterKeyed names the top-level keys that look like an adapter carrying
-	// its own rule list -- {"global": {"policy": ..., "rules": [...]}}. That is
-	// the one alternative shape there is published evidence for, and naming it
-	// turns "the provider does not understand this" into a specific question.
-	AdapterKeyed []string
 }
 
 func (e *FirewallProfileShapeError) Error() string {
@@ -382,42 +418,86 @@ func (e *FirewallProfileShapeError) Error() string {
 		keys = strings.Join(quoteAll(e.Keys), ", ")
 	}
 
-	msg := fmt.Sprintf(
-		"SYNO.Core.Security.Firewall.Profile `get` answered success for profile %q but the response carries none of the keys "+
-			"a profile has (%q, %q, %q); it carries %s instead. The provider cannot tell an empty profile apart from a "+
-			"response it is misreading, and writing back a profile it reconstructed from an unrecognised response would "+
-			"replace every rule the profile holds",
-		e.Profile, "name", "rules", "adapterPolicyMap", keys)
-
-	if len(e.AdapterKeyed) > 0 {
-		msg += fmt.Sprintf(
-			". The keys %s each hold their own rule list, which is the adapter-keyed shape two published DSM clients send "+
-				"and read (Schidstorm/home-platform, KastnerRG/krg-infra) -- so this DSM most likely speaks that shape over "+
-				"HTTP rather than the on-disk shape from Synology's own fwDB.hpp that this client was built against. That is "+
-				"the leading explanation for issue #130 and it has never been confirmed against hardware",
-			strings.Join(quoteAll(e.AdapterKeyed), ", "))
-	}
-
-	return msg
+	return fmt.Sprintf(
+		"SYNO.Core.Security.Firewall.Profile `get` answered success for profile %q but the response is not in either shape "+
+			"this provider recognises; it carries %s. Expected either the adapter-keyed shape a live DSM answers with "+
+			"({\"name\": ..., \"global\": {\"policy\": \"none\", \"rules\": []}}) or the on-disk shape "+
+			"({\"name\": ..., \"rules\": {...}, \"adapterPolicyMap\": {...}}). The provider cannot tell an empty profile "+
+			"apart from a response it is misreading, and writing back a profile it reconstructed from an unrecognised "+
+			"response would replace every rule the profile holds",
+		e.Profile, keys)
 }
 
-// adapterKeyedProfileKeys reports the top-level keys that look like an adapter
-// carrying its own rule list. See FirewallProfileShapeError.AdapterKeyed.
-func adapterKeyedProfileKeys(envelope map[string]json.RawMessage) []string {
-	var out []string
-	for key, raw := range envelope {
-		var value struct {
-			Rules []json.RawMessage `json:"rules"`
-		}
-		if err := json.Unmarshal(raw, &value); err != nil {
-			continue
-		}
-		if value.Rules == nil {
-			continue
-		}
-		out = append(out, key)
+// FirewallRuleWriteUnsupportedError reports a refused write: the profile was
+// read in the adapter-keyed shape, and no rule encoding is known for that shape.
+//
+// This is a deliberate dead end rather than an oversight. Writing the *policy*
+// of an adapter-keyed profile is confirmed to work -- that round trip was
+// captured on virtual DSM 7.2.2 -- but every candidate encoding of a rule inside
+// one crashes synoscgi outright: the on-disk object from fwDB.hpp, the
+// string-enum variant two published clients send, snake_case, a rule carrying
+// only a name, and even a bare `[{}]` all make DSM answer with its HTML error
+// page instead of JSON, because the request never survives the parser. A crashed
+// synoscgi takes DSM's whole web interface down with it.
+//
+// So the provider does the one honest thing available and refuses to send the
+// payload. Guessing again on somebody else's NAS is not a debugging strategy,
+// and this is a security control: a wrong guess that *did* parse would be worse
+// than one that did not.
+type FirewallRuleWriteUnsupportedError struct {
+	Profile string
+	// Adapters names the adapters that would carry at least one rule, sorted.
+	Adapters []string
+	// Rules names the rules that would have been sent, sorted.
+	Rules []string
+}
+
+func (e *FirewallRuleWriteUnsupportedError) Error() string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b,
+		"this DSM answers SYNO.Core.Security.Firewall.Profile `get` in the adapter-keyed shape "+
+			"({\"name\": ..., \"<adapter>\": {\"policy\": \"drop\", \"rules\": [...]}}), and no encoding of a firewall rule "+
+			"inside that shape is known to work: every published and probed form makes DSM's own request parser crash, so "+
+			"synoscgi answers an HTML error page rather than JSON and the DSM web interface goes down with it. The provider "+
+			"therefore refuses to send it. Nothing was written to profile %q",
+		e.Profile)
+
+	if len(e.Rules) > 0 {
+		fmt.Fprintf(&b, "; the write would have carried %s", strings.Join(quoteAll(e.Rules), ", "))
 	}
-	sort.Strings(out)
+	if len(e.Adapters) > 0 {
+		fmt.Fprintf(&b, " under adapter(s) %s", strings.Join(quoteAll(e.Adapters), ", "))
+	}
+
+	b.WriteString(". Managing the firewall's default policy (`dsm_firewall`) is unaffected: that write is confirmed to " +
+		"round-trip in this shape. What is missing is one capture of a profile that actually holds rules -- either " +
+		"`cat /usr/syno/etc/firewall.d/*.json` over SSH, or the raw response of " +
+		"SYNO.Core.Security.Firewall.Profile `get` from a NAS where a rule was created in Control Panel -> Security -> " +
+		"Firewall. With that, the encoding stops being a guess. See issue #130")
+
+	return b.String()
+}
+
+// firewallAdapterBlocks picks out the top-level keys of an adapter-keyed profile:
+// the ones whose value is an object carrying a policy, a rule list, or both.
+//
+// `name` is a string and so never matches, and a legacy profile's `rules` and
+// `adapterPolicyMap` are checked for before this is ever called.
+func firewallAdapterBlocks(m map[string]interface{}) map[string]map[string]interface{} {
+	out := map[string]map[string]interface{}{}
+	for key, value := range m {
+		block, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		_, hasPolicy := block["policy"]
+		_, hasRules := block["rules"]
+		if !hasPolicy && !hasRules {
+			continue
+		}
+		out[key] = block
+	}
 	return out
 }
 
@@ -440,10 +520,14 @@ func (c *Client) GetFirewallSettings(ctx context.Context) (*FirewallSettings, er
 
 // GetFirewallProfile reads one profile whole.
 //
-// INFERRED: the `name` parameter and whether the profile arrives bare or nested
-// under a "profile" key. Both shapes are accepted rather than betting on one.
-// The API and method (SYNO.Core.Security.Firewall.Profile v1 `get`) are
-// confirmed; the response envelope is not.
+// CONFIRMED against virtual DSM 7.2.2: `name` is the parameter, and the profile
+// arrives bare, adapter-keyed --
+// {"global": {"policy": "none", "rules": []}, "name": "default"}. The nested
+// "profile" envelope and the on-disk {rules, adapterPolicyMap} shape are still
+// accepted, because the webapi shim that renders the profile is not published
+// and another DSM build may well answer differently. Which shape a response is
+// in is decided from the response itself, never from a version number, and the
+// same shape is used for the write (see FirewallProfile.toWire).
 func (c *Client) GetFirewallProfile(ctx context.Context, name string) (*FirewallProfile, error) {
 	params := url.Values{}
 	params.Set("name", name)
@@ -461,30 +545,17 @@ func (c *Client) GetFirewallProfile(ctx context.Context, name string) (*Firewall
 	body := data
 	if nested, ok := envelope["profile"]; ok {
 		body = nested
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			return nil, fmt.Errorf("parse firewall profile %q: %w", name, err)
-		}
 	}
 
-	// A response carrying neither of the two structural keys is not a profile,
-	// however successful the envelope was. Proceeding would hand the caller an
-	// empty profile, and the callers here are read-modify-write: they would send
-	// that emptiness back and wipe the rules DSM never showed them.
-	_, hasRules := envelope["rules"]
-	_, hasPolicy := envelope["adapterPolicyMap"]
-	if !hasRules && !hasPolicy {
-		return nil, &FirewallProfileShapeError{
-			Profile:      name,
-			Keys:         sortedKeys(envelope),
-			AdapterKeyed: adapterKeyedProfileKeys(envelope),
-		}
-	}
-
-	profile, err := parseFirewallProfile(body)
+	profile, err := parseFirewallProfile(body, name)
 	if err != nil {
+		// A shape error already names the profile and every key DSM sent; wrapping
+		// it would only repeat that back.
+		if _, ok := err.(*FirewallProfileShapeError); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("parse firewall profile %q: %w", name, err)
 	}
-	profile.rulesKeyPresent = hasRules
 	if profile.Name == "" {
 		profile.Name = name
 	}
@@ -951,23 +1022,9 @@ func firewallRuleNames(rules []FirewallRule) []string {
 // sortedAdapters lists every adapter key the profile came back with, rules and
 // policies alike, so a diagnostic can show what DSM answered rather than only
 // what was looked for.
-func sortedAdapters(profile *FirewallProfile) []string {
-	seen := map[string]bool{}
-	for adapter := range profile.Rules {
-		seen[adapter] = true
-	}
-	for adapter := range profile.AdapterPolicy {
-		seen[adapter] = true
-	}
-	out := make([]string, 0, len(seen))
-	for adapter := range seen {
-		out = append(out, adapter)
-	}
-	sort.Strings(out)
-	return out
-}
+func sortedAdapters(profile *FirewallProfile) []string { return profile.adapterKeys() }
 
-func sortedKeys(m map[string]json.RawMessage) []string {
+func sortedAnyKeys(m map[string]interface{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -1112,6 +1169,8 @@ func (p *FirewallProfile) clone() *FirewallProfile {
 		Name:            p.Name,
 		Rules:           make(map[string][]FirewallRule, len(p.Rules)),
 		AdapterPolicy:   make(map[string]int, len(p.AdapterPolicy)),
+		shape:           p.shape,
+		unparsedRules:   p.unparsedRules,
 		rulesKeyPresent: p.rulesKeyPresent,
 		raw:             p.raw,
 	}
@@ -1157,7 +1216,15 @@ func (c *Client) writeFirewallProfile(ctx context.Context, profile *FirewallProf
 // which profile to apply, and applying here as well would either commit the
 // wrong profile or commit the right one twice.
 func (c *Client) saveFirewallProfile(ctx context.Context, profile *FirewallProfile) error {
-	encoded, err := json.Marshal(profile.toWire())
+	// The render can refuse. This is the single choke point every profile write
+	// passes through, which is exactly where the refusal belongs: a payload that
+	// crashes DSM's request parser must be impossible to send, not merely
+	// discouraged at the call sites that happen to remember.
+	wire, err := profile.toWire()
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(wire)
 	if err != nil {
 		return fmt.Errorf("encode firewall profile: %w", err)
 	}
@@ -1378,9 +1445,23 @@ func validateFirewallRule(rule FirewallRule) error {
 	return nil
 }
 
-// toWire renders the profile for a `set` call, starting from whatever DSM
-// returned so keys this provider does not model ride along unchanged.
-func (p *FirewallProfile) toWire() map[string]interface{} {
+// toWire renders the profile for a `set` call, in the same shape it was read in.
+//
+// Round-trip fidelity is the point. DSM answers `success: true` to a profile
+// object it does not understand and stores nothing (issue #130), so the write
+// cannot pick a shape on its own: it has to answer in the one the read came
+// back in. Either way the render starts from whatever DSM returned, so keys this
+// provider does not model ride along unchanged.
+func (p *FirewallProfile) toWire() (map[string]interface{}, error) {
+	if p.shape == firewallShapeAdapterKeyed {
+		return p.toWireAdapterKeyed()
+	}
+	return p.toWireRulesMap(), nil
+}
+
+// toWireRulesMap renders {"rules": {...}, "adapterPolicyMap": {...}}, the shape
+// Synology's own fwDB.hpp uses on disk.
+func (p *FirewallProfile) toWireRulesMap() map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range p.raw {
 		out[k] = v
@@ -1404,6 +1485,111 @@ func (p *FirewallProfile) toWire() map[string]interface{} {
 	}
 	out["adapterPolicyMap"] = policy
 
+	return out
+}
+
+// toWireAdapterKeyed renders {"name": ..., "<adapter>": {"policy": "drop",
+// "rules": []}}, the shape a live DSM answers with — and refuses outright to
+// render a rule into it.
+//
+// The refusal is the safety property, not a limitation being worked around. The
+// policy half of this shape is confirmed to round-trip on virtual DSM 7.2.2; the
+// rule half has no known encoding, and every candidate crashes DSM's request
+// parser rather than being rejected by it, which takes the NAS's web interface
+// down. "I do not know how to write this" is the only true thing the provider
+// can say, and saying it costs an operator an error message where guessing costs
+// them a firewall.
+//
+// The rules already in the profile count too, not only the one being written: a
+// `set` carries the whole profile, so a policy change to one adapter would still
+// have to send every other adapter's rules.
+func (p *FirewallProfile) toWireAdapterKeyed() (map[string]interface{}, error) {
+	if err := p.refuseAdapterKeyedRules(); err != nil {
+		return nil, err
+	}
+
+	out := map[string]interface{}{}
+	for k, v := range p.raw {
+		out[k] = v
+	}
+	out["name"] = p.Name
+
+	for _, adapter := range p.adapterKeys() {
+		block := map[string]interface{}{}
+		existing, known := p.raw[adapter].(map[string]interface{})
+		for k, v := range existing {
+			block[k] = v
+		}
+
+		if policy, ok := p.AdapterPolicy[adapter]; ok {
+			block["policy"] = firewallPolicyToWireString(policy)
+		}
+
+		_, hadRulesKey := p.Rules[adapter]
+		if hadRulesKey || !known {
+			// Empty by construction: refuseAdapterKeyedRules has already established
+			// that no adapter holds a rule.
+			//
+			// An adapter DSM never mentioned gets the key anyway, because the write
+			// that was actually captured carries `"rules": []` on every adapter block
+			// and there is nothing to be faithful to. An adapter DSM *did* send
+			// without a rules key keeps it that way.
+			block["rules"] = []interface{}{}
+		}
+		out[adapter] = block
+	}
+
+	return out, nil
+}
+
+// refuseAdapterKeyedRules reports the rules that a write would have to encode
+// and cannot.
+//
+// It counts the entries the parser lost as well as the ones it kept: an entry
+// DSM sent that did not become a rule still occupies a slot, and writing an
+// empty array over it would delete somebody's rule quietly — which is the
+// failure mode this whole area exists to avoid.
+//
+// It counts the *model*, not the array DSM last sent, because those diverge
+// legitimately: deleting the only rule an adapter has leaves an empty model and
+// a one-element response, and `rules: []` is then both the correct payload and a
+// confirmed-working one.
+func (p *FirewallProfile) refuseAdapterKeyedRules() error {
+	var adapters, names []string
+
+	for _, adapter := range p.adapterKeys() {
+		if len(p.Rules[adapter])+p.unparsedRules[adapter] == 0 {
+			continue
+		}
+		adapters = append(adapters, adapter)
+		for _, rule := range p.Rules[adapter] {
+			names = append(names, rule.Name)
+		}
+	}
+
+	if len(adapters) == 0 {
+		return nil
+	}
+	sort.Strings(adapters)
+	sort.Strings(names)
+	return &FirewallRuleWriteUnsupportedError{Profile: p.Name, Adapters: adapters, Rules: names}
+}
+
+// adapterKeys lists every adapter the profile knows about, from either map,
+// sorted so a rendered payload is stable across runs.
+func (p *FirewallProfile) adapterKeys() []string {
+	seen := map[string]bool{}
+	for adapter := range p.Rules {
+		seen[adapter] = true
+	}
+	for adapter := range p.AdapterPolicy {
+		seen[adapter] = true
+	}
+	out := make([]string, 0, len(seen))
+	for adapter := range seen {
+		out = append(out, adapter)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -1593,6 +1779,62 @@ func splitIPRange(spec string) (net.IP, net.IP, bool) {
 	return low, high, true
 }
 
+// Policy spellings DSM uses on the wire in the adapter-keyed shape. CONFIRMED
+// on virtual DSM 7.2.2: `global` reads back as "none" and a written "drop"
+// round-trips. They are the lowercase names of FW_POLICY from fwDB.hpp, so
+// "partial" is included for completeness even though nothing has ever answered
+// with it.
+//
+// Note that DSM's spelling of FW_POLICY_DROP is "drop" while this provider
+// spells the same value "deny" (FirewallPolicyDeny), so the two must not be used
+// interchangeably. allow and none coincide.
+const (
+	fwPolicyWireDrop    = "drop"
+	fwPolicyWirePartial = "partial"
+)
+
+// firewallAdapterPolicyFromWire reads a per-adapter policy DSM sent, in either
+// encoding: the string of the adapter-keyed shape or the FW_POLICY integer of
+// the on-disk one.
+func firewallAdapterPolicyFromWire(value interface{}) (int, bool) {
+	if s, ok := value.(string); ok {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case FirewallPolicyAllow:
+			return fwPolicyAllow, true
+		case fwPolicyWireDrop:
+			return fwPolicyDrop, true
+		case FirewallPolicyNone:
+			return fwPolicyNone, true
+		case fwPolicyWirePartial:
+			return fwPolicyPartial, true
+		default:
+			// Not a policy word. Falling through to toInt would read "deny" as a
+			// failed number rather than as the provider's own spelling reaching the
+			// wire by mistake, so say no here instead.
+			return 0, false
+		}
+	}
+	return toInt(value)
+}
+
+// firewallPolicyToWireString renders a policy for the adapter-keyed shape.
+//
+// An unrecognised value becomes "none", matching FirewallPolicyName: rendering a
+// future DSM's fifth policy as "allow" or "drop" would write a security setting
+// nobody asked for.
+func firewallPolicyToWireString(value int) string {
+	switch value {
+	case fwPolicyAllow:
+		return FirewallPolicyAllow
+	case fwPolicyDrop:
+		return fwPolicyWireDrop
+	case fwPolicyPartial:
+		return fwPolicyWirePartial
+	default:
+		return FirewallPolicyNone
+	}
+}
+
 func firewallPolicyToWire(action string) int {
 	if action == FirewallActionDeny {
 		return fwPolicyDrop
@@ -1633,7 +1875,16 @@ func firewallProtocolFromWire(protocol int) string {
 	}
 }
 
-func parseFirewallProfile(raw json.RawMessage) (*FirewallProfile, error) {
+// parseFirewallProfile turns a `Profile get` response into the provider's model.
+//
+// The shape is decided from the response itself. A top-level `rules` or
+// `adapterPolicyMap` key means the on-disk shape from Synology's fwDB.hpp;
+// otherwise, top-level keys whose value is an object carrying `policy` or
+// `rules` mean the adapter-keyed shape a live DSM answers with. A response that
+// is neither is a FirewallProfileShapeError rather than an empty profile: every
+// write here is read-modify-write, so an unrecognised response taken at face
+// value would be written straight back and would replace the operator's rules.
+func parseFirewallProfile(raw json.RawMessage, name string) (*FirewallProfile, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
@@ -1644,40 +1895,107 @@ func parseFirewallProfile(raw json.RawMessage) (*FirewallProfile, error) {
 		AdapterPolicy: map[string]int{},
 		raw:           m,
 	}
-
 	if v, ok := m["name"].(string); ok {
 		profile.Name = v
 	}
 
+	_, hasRulesKey := m["rules"]
+	_, hasPolicyMapKey := m["adapterPolicyMap"]
+	if hasRulesKey || hasPolicyMapKey {
+		profile.shape = firewallShapeRulesMap
+		profile.rulesKeyPresent = hasRulesKey
+		parseFirewallRulesMapProfile(profile, m)
+		return profile, nil
+	}
+
+	blocks := firewallAdapterBlocks(m)
+	if len(blocks) == 0 {
+		return nil, &FirewallProfileShapeError{Profile: name, Keys: sortedAnyKeys(m)}
+	}
+
+	profile.shape = firewallShapeAdapterKeyed
+	parseFirewallAdapterKeyedProfile(profile, blocks)
+	return profile, nil
+}
+
+// parseFirewallRulesMapProfile reads {"rules": {<adapter>: [...]},
+// "adapterPolicyMap": {<adapter>: int}}.
+func parseFirewallRulesMapProfile(profile *FirewallProfile, m map[string]interface{}) {
 	if rules, ok := m["rules"].(map[string]interface{}); ok {
 		for adapter, value := range rules {
 			list, ok := value.([]interface{})
 			if !ok {
 				continue
 			}
-			parsed := make([]FirewallRule, 0, len(list))
-			for _, item := range list {
-				obj, ok := item.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				rule := parseFirewallRule(obj)
-				rule.Priority = len(parsed)
-				parsed = append(parsed, *rule)
-			}
-			profile.Rules[adapter] = parsed
+			var skipped int
+			profile.Rules[adapter], skipped = parseFirewallRuleList(list)
+			profile.noteUnparsedRules(adapter, skipped)
 		}
 	}
 
 	if policies, ok := m["adapterPolicyMap"].(map[string]interface{}); ok {
 		for adapter, value := range policies {
-			if n, ok := toInt(value); ok {
+			if n, ok := firewallAdapterPolicyFromWire(value); ok {
 				profile.AdapterPolicy[adapter] = n
 			}
 		}
 	}
+}
 
-	return profile, nil
+// parseFirewallAdapterKeyedProfile reads {"<adapter>": {"policy": "drop",
+// "rules": [...]}}, the shape captured from virtual DSM 7.2.2.
+func parseFirewallAdapterKeyedProfile(profile *FirewallProfile, blocks map[string]map[string]interface{}) {
+	for adapter, block := range blocks {
+		if policy, ok := block["policy"]; ok {
+			if n, ok := firewallAdapterPolicyFromWire(policy); ok {
+				profile.AdapterPolicy[adapter] = n
+			}
+		}
+
+		value, ok := block["rules"]
+		if !ok {
+			// Policy but no rule list. Recorded as such rather than as an empty
+			// list, so a write does not invent a `rules` key DSM never sent.
+			continue
+		}
+		profile.rulesKeyPresent = true
+		// DSM answers `"rules": null` as readily as `[]` (Firewall.Rules `load`
+		// does exactly that), and both mean the same thing.
+		list, _ := value.([]interface{})
+		var skipped int
+		profile.Rules[adapter], skipped = parseFirewallRuleList(list)
+		profile.noteUnparsedRules(adapter, skipped)
+	}
+}
+
+// noteUnparsedRules records rule entries DSM sent that the parser could not
+// read. See FirewallProfile.unparsedRules.
+func (p *FirewallProfile) noteUnparsedRules(adapter string, skipped int) {
+	if skipped == 0 {
+		return
+	}
+	if p.unparsedRules == nil {
+		p.unparsedRules = map[string]int{}
+	}
+	p.unparsedRules[adapter] += skipped
+}
+
+// parseFirewallRuleList reads one adapter's rule array, returning the rules and
+// the number of entries it could not read.
+func parseFirewallRuleList(list []interface{}) ([]FirewallRule, int) {
+	parsed := make([]FirewallRule, 0, len(list))
+	skipped := 0
+	for _, item := range list {
+		obj, ok := item.(map[string]interface{})
+		if !ok {
+			skipped++
+			continue
+		}
+		rule := parseFirewallRule(obj)
+		rule.Priority = len(parsed)
+		parsed = append(parsed, *rule)
+	}
+	return parsed, skipped
 }
 
 // parseFirewallRule turns one DSM rule object into the provider's model, keeping
@@ -1696,7 +2014,13 @@ func parseFirewallRule(m map[string]interface{}) *FirewallRule {
 	if v, ok := toBool(m["enable"]); ok {
 		rule.Enabled = v
 	}
-	if v, ok := toInt(m["policy"]); ok {
+	// A rule's policy is read through the same converter as an adapter's, so the
+	// string spelling is understood as well as the FW_POLICY integer. Nothing has
+	// captured a rule out of an adapter-keyed profile, but if one arrives with
+	// `"policy": "drop"` the dangerous direction is reading it as the default,
+	// allow: the lockout replay would then believe a deny rule lets this session
+	// through.
+	if v, ok := firewallAdapterPolicyFromWire(m["policy"]); ok {
 		rule.Action = firewallPolicyFromWire(v)
 	}
 	if v, ok := toInt(m["protocol"]); ok {
