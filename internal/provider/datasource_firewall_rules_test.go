@@ -35,7 +35,7 @@ func TestFirewallRulesDataSource_Schema(t *testing.T) {
 
 	attrs := resp.Schema.GetAttributes()
 
-	topLevel := []string{"id", "profile", "firewall_enabled", "profile_active", "rules"}
+	topLevel := []string{"id", "profile", "firewall_enabled", "profile_active", "default_policy", "rules"}
 	for _, attr := range topLevel {
 		if _, ok := attrs[attr]; !ok {
 			t.Errorf("missing top-level attribute %q", attr)
@@ -46,6 +46,14 @@ func TestFirewallRulesDataSource_Schema(t *testing.T) {
 		if !attr.IsOptional() {
 			t.Errorf("profile should be optional, required=%v computed=%v", attr.IsRequired(), attr.IsComputed())
 		}
+	}
+
+	// #123: the fall-through policy decides what a rule list means, so an audit
+	// read has to report it.
+	if attr := attrs["default_policy"]; attr == nil || !attr.IsComputed() {
+		t.Error("default_policy must be computed")
+	} else if got := attr.GetType().String(); got != "types.MapType[basetypes.StringType]" {
+		t.Errorf("default_policy type = %s, want a map of strings", got)
 	}
 
 	rulesAttr, ok := attrs["rules"]

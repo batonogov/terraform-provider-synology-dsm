@@ -40,6 +40,7 @@ All provider attributes can also be set via environment variables: `SYNOLOGY_DSM
 | `dsm_file` | Upload configuration files into a shared folder |
 | `dsm_system_settings` | NAS time zone and NTP |
 | `dsm_reverse_proxy` | Login Portal reverse proxy entries |
+| `dsm_firewall` | Firewall global switch, active profile, and default policy |
 | `dsm_firewall_rule` | Firewall profile rules |
 | `dsm_scheduled_task` | Task Scheduler script tasks |
 | `dsm_event_task` | Boot/shutdown tasks |
@@ -73,6 +74,16 @@ to say whether a step will ever become automatable:
 
 The full breakdown, including what an implementation of the network resources
 would have to carry, is in [the provider documentation](docs/index.md#scope-what-this-provider-manages-and-what-it-does-not).
+
+## Before you manage the firewall
+
+`dsm_firewall` and `dsm_firewall_rule` can make a NAS unreachable, and the only way back from that is physical access. Two things are worth knowing before the first apply.
+
+**The provider checks, but it cannot check everything.** Before switching the firewall on, switching profiles, tightening a default policy, or writing a rule, the provider replays the resulting profile against the address its own session connects from and refuses a change that would deny it. The check is blind to NAT (it sees the local end of the TCP connection, which is not what DSM sees behind a router) and cannot replay GeoIP or DSM service-preset rules — those make it inconclusive, which warns rather than blocks. `allow_lockout = true` turns it off.
+
+**The write side of the global switch is reconstructed, not captured.** `SYNO.Core.Security.Firewall` is undocumented. Its `set` method and its two-field shape are confirmed from primary sources — DSM's own webapi descriptor lists exactly `{set, get}` on version 1, and Synology's `synofirewall/synoFW.hpp` models the global state as a status flag plus an active profile name — and the parameter names are corroborated by the one published implementation that writes this API against DSM 7.2/7.3. But nothing here has been run against a NAS from this repository, and two details are genuine guesses: the HTTP verb, and whether `profile_name` travels plain or JSON-quoted. Both have a fallback rather than a bet — POST then GET, then a retry with the other encoding — and DSM rejecting all of them produces an error that says so. Reading the firewall is unaffected, and so is `dsm_firewall_rule`, which writes through the separate `Firewall.Profile` API. Acceptance tests for `dsm_firewall` are gated behind `DSM_ACC_FIREWALL=1` and never switch the firewall on.
+
+The safe order is: create the rules with the firewall off, apply, confirm the rules read back as intended, and only then set `enabled = true`.
 
 ## Keeping secrets out of Terraform state
 
