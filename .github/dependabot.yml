@@ -14,3 +14,14 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci:"
+
+  # The virtual DSM image is the acceptance suite's system under test, pinned by
+  # digest in docker-compose.test.yml (see the comment there). Dependabot turns
+  # each new DSM release into a reviewable PR instead of a silent change under a
+  # running test suite.
+  - package-ecosystem: docker-compose
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

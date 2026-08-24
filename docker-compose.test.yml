@@ -1,6 +1,19 @@
 services:
   dsm:
-    image: vdsm/virtual-dsm
+    # Pinned by digest, not by tag, and least of all by latest.
+    #
+    # vdsm/virtual-dsm ships a new DSM every few days (7.51 in May, 7.65 by late
+    # August), and this container *is* the system under test: an unpinned image
+    # means a red acceptance run cannot be read as "the provider broke" rather
+    # than "DSM changed underneath it", which is the one question the suite
+    # exists to answer. The saved Lima state is also tied to the image that
+    # created it, so a silent bump costs a 20-minute cold boot as well.
+    #
+    # The tag is kept alongside the digest for readability; the digest is what
+    # Docker resolves. Dependabot opens a PR when a newer image appears, so
+    # pinning does not mean going stale — it means the bump is a reviewed commit
+    # with its own CI run.
+    image: vdsm/virtual-dsm:7.65@sha256:be18567e4d9690c053e3191f7fe5b65f68e871c50b708de82297021462175ff8
     container_name: dsm
     ports:
       - "5000:5000"
