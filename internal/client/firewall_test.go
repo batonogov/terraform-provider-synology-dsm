@@ -23,8 +23,25 @@ type firewallFixture struct {
 	activeProfile string
 	profile       map[string]interface{}
 
+	// onSet, when set, decides what the fixture stores for an incoming `set`.
+	// Returning nil stores nothing while still answering success -- the DSM
+	// behaviour issue #130 reports. Guarded by mu.
+	onSet func(incoming map[string]interface{}) map[string]interface{}
+	// onGet, when set, rewrites the profile on the way out, so a read can be made
+	// to lag behind the write the way a NAS in the middle of an apply does.
+	onGet func(stored map[string]interface{}) map[string]interface{}
+
 	applies atomic.Int64
 	sets    atomic.Int64
+	gets    atomic.Int64
+}
+
+// discardWrites makes the fixture answer every profile `set` with success and
+// store nothing.
+func (f *firewallFixture) discardWrites() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onSet = func(map[string]interface{}) map[string]interface{} { return nil }
 }
 
 func newFirewallFixture(t *testing.T, enabled bool, rules map[string][]map[string]interface{}) (*Client, *firewallFixture, *httptest.Server) {
@@ -71,8 +88,13 @@ func newFirewallFixture(t *testing.T, enabled bool, rules map[string][]map[strin
 			writeAPIData(w, data)
 
 		case api == "SYNO.Core.Security.Firewall.Profile" && method == "get":
+			f.gets.Add(1)
 			f.mu.Lock()
-			raw, _ := json.Marshal(f.profile)
+			served := f.profile
+			if f.onGet != nil {
+				served = f.onGet(served)
+			}
+			raw, _ := json.Marshal(served)
 			f.mu.Unlock()
 			json.NewEncoder(w).Encode(APIResponse{Success: true, Data: raw})
 
@@ -84,7 +106,13 @@ func newFirewallFixture(t *testing.T, enabled bool, rules map[string][]map[strin
 			}
 			f.sets.Add(1)
 			f.mu.Lock()
-			f.profile = incoming
+			stored := incoming
+			if f.onSet != nil {
+				stored = f.onSet(incoming)
+			}
+			if stored != nil {
+				f.profile = stored
+			}
 			f.mu.Unlock()
 			json.NewEncoder(w).Encode(APIResponse{Success: true})
 

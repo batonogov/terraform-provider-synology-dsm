@@ -44,6 +44,11 @@ type settingsFixture struct {
 	requireQuotedProfileName bool
 	// switchMethod is the method name the fixture accepts for the global switch.
 	switchMethod string
+	// discardSwitch makes the global switch record the call, answer success, and
+	// change nothing -- the silent no-op of issue #130.
+	discardSwitch bool
+	// discardProfileSet does the same for the profile write.
+	discardProfileSet bool
 }
 
 func newSettingsFixture(t *testing.T, enabled bool, profiles map[string]map[string]interface{}) (*Client, *settingsFixture, *httptest.Server) {
@@ -93,9 +98,11 @@ func newSettingsFixture(t *testing.T, enabled bool, profiles map[string]map[stri
 				EnableFirewall: r.FormValue("enable_firewall"),
 				ProfileName:    r.FormValue("profile_name"),
 			})
-			f.enabled = r.FormValue("enable_firewall") == "true"
-			if name := unquoteFormValue(r.FormValue("profile_name")); name != "" {
-				f.activeProfile = name
+			if !f.discardSwitch {
+				f.enabled = r.FormValue("enable_firewall") == "true"
+				if name := unquoteFormValue(r.FormValue("profile_name")); name != "" {
+					f.activeProfile = name
+				}
 			}
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(APIResponse{Success: true})
@@ -124,7 +131,9 @@ func newSettingsFixture(t *testing.T, enabled bool, profiles map[string]map[stri
 			}
 			f.profileSets.Add(1)
 			f.mu.Lock()
-			f.profiles[incoming["name"].(string)] = incoming
+			if !f.discardProfileSet {
+				f.profiles[incoming["name"].(string)] = incoming
+			}
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(APIResponse{Success: true})
 
@@ -604,4 +613,69 @@ func denySubnetRule(name, network, mask string) map[string]interface{} {
 	rule["ipGroup"] = float64(fwIPGroupNetmask)
 	rule["ipList"] = []interface{}{network, mask}
 	return rule
+}
+
+// The profile-level write has the same problem the rule write had (issue #130):
+// SYNO.Core.Security.Firewall `set` is reconstructed rather than captured, so a
+// success that changed nothing has to be reported rather than recorded.
+func TestClient_SetFirewall_SwitchWithoutEffectIsAnError(t *testing.T) {
+	c, f, server := newSettingsFixture(t, false, map[string]map[string]interface{}{
+		"default": {
+			"name":             "default",
+			"rules":            map[string]interface{}{"eth0": []interface{}{allowAllRule("allow all")}},
+			"adapterPolicyMap": map[string]interface{}{"eth0": float64(fwPolicyDrop)},
+		},
+	})
+	defer server.Close()
+
+	f.mu.Lock()
+	f.discardSwitch = true
+	f.mu.Unlock()
+
+	_, err := c.SetFirewall(context.Background(), SetFirewallRequest{Profile: "default", Enabled: true})
+	if err == nil {
+		t.Fatal("expected an error when DSM reports success and leaves the firewall off")
+	}
+
+	var notPersisted *FirewallSettingsNotPersistedError
+	if !errors.As(err, &notPersisted) {
+		t.Fatalf("expected *FirewallSettingsNotPersistedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "enabled") {
+		t.Errorf("message does not name the field that did not take: %s", err.Error())
+	}
+}
+
+// A default policy DSM accepts and does not store is the same failure in the
+// other half of the write.
+func TestClient_SetFirewall_DefaultPolicyWithoutEffectIsAnError(t *testing.T) {
+	c, f, server := newSettingsFixture(t, false, map[string]map[string]interface{}{
+		"default": {
+			"name":             "default",
+			"rules":            map[string]interface{}{"eth0": []interface{}{allowAllRule("allow all")}},
+			"adapterPolicyMap": map[string]interface{}{"eth0": float64(fwPolicyAllow)},
+		},
+	})
+	defer server.Close()
+
+	f.mu.Lock()
+	f.discardProfileSet = true
+	f.mu.Unlock()
+
+	_, err := c.SetFirewall(context.Background(), SetFirewallRequest{
+		Profile:       "default",
+		Enabled:       false,
+		DefaultPolicy: map[string]string{"eth0": FirewallPolicyDeny},
+	})
+	if err == nil {
+		t.Fatal("expected an error when DSM reports success and keeps the old default policy")
+	}
+
+	var notPersisted *FirewallSettingsNotPersistedError
+	if !errors.As(err, &notPersisted) {
+		t.Fatalf("expected *FirewallSettingsNotPersistedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "eth0") {
+		t.Errorf("message does not name the adapter whose policy did not take: %s", err.Error())
+	}
 }
