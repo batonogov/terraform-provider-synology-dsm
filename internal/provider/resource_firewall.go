@@ -64,7 +64,13 @@ func (r *firewallResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"~> `SYNO.Core.Security.Firewall` is undocumented, and this provider has never run its **write** against a " +
 			"NAS. The method and its two fields are confirmed from Synology's own webapi descriptor and firewall " +
 			"library; the HTTP verb and the string encoding are not, so the provider tries each in turn and reports " +
-			"clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.",
+			"clearly if DSM refuses them all. See the README before using this on a NAS you cannot reach physically.\n\n" +
+			"~> `default_policy` is written by sending the whole profile back, so rules already in the profile travel with " +
+			"it. They are handed back to DSM exactly as DSM sent them, which needs no encoding and is what the DSM web " +
+			"interface itself does; the policy round trip is confirmed on 7.2.2. What the provider will not do is *render* " +
+			"a rule into an adapter-keyed profile — no known encoding survives DSM's request parser — so a write that would " +
+			"have to modify a rule is refused instead. See " +
+			"[issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130).",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -445,6 +451,21 @@ func appendFirewallSettingsDiagnostic(diags *diag.Diagnostics, summary string, e
 			empty.Error()+
 				"\n\nNothing was written. Create the rules first and switch the firewall on in a second step, or set "+
 				"allow_empty_rule_set = true if denying everything is really the intent.",
+		)
+		return
+	}
+
+	var unsupported *client.FirewallRuleWriteUnsupportedError
+	if errors.As(err, &unsupported) {
+		diags.AddError(
+			"This DSM's firewall rules cannot be written by the provider",
+			unsupported.Error()+
+				"\n\nNothing was written. Rules DSM sent are handed back untouched, so an ordinary default-policy change goes "+
+				"through even on a profile full of rules; this refusal means the write would have had to render a rule — one "+
+				"is being created or edited, or an entry in the profile could not be read and would have been dropped. Make "+
+				"that rule change in Control Panel -> Security -> Firewall for now, and see "+
+				"https://github.com/batonogov/terraform-provider-synology-dsm/issues/130 for the one capture that would lift "+
+				"this.",
 		)
 		return
 	}
