@@ -13,7 +13,7 @@ import (
 
 // ErrEventTaskNotFound is returned when DSM has no event-triggered task with
 // the requested name.
-var ErrEventTaskNotFound = errors.New("event task not found")
+var ErrEventTaskNotFound = &NotFoundError{Kind: "event task"}
 
 // Event Scheduler wire contract.
 //

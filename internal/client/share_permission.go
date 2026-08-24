@@ -67,7 +67,14 @@ func (c *Client) GetSharePermission(ctx context.Context, shareName, userGroupTyp
 		}
 	}
 
-	return nil, fmt.Errorf("permission not found for %s %q on share %q", userGroupType, principalName, shareName)
+	// The share's permission list came back and this principal was not in it:
+	// established absence. A share that no longer exists fails the list call
+	// above instead, and stays an error.
+	return nil, &NotFoundError{
+		Kind:  userGroupType + " share permission",
+		Name:  principalName,
+		Scope: fmt.Sprintf("on share %q", shareName),
+	}
 }
 
 func (c *Client) SetSharePermission(ctx context.Context, req SetSharePermissionRequest) (*SharePermission, error) {

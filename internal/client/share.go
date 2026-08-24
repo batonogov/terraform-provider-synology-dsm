@@ -149,10 +149,25 @@ func (c *Client) GetShare(ctx context.Context, name string) (*Share, error) {
 
 	data, err := c.DoAPI(ctx, "SYNO.Core.Share", "1", "get", params)
 	if err != nil {
+		if absenceConfirmedBy(ctx, err, func(ctx context.Context) (bool, error) {
+			return c.shareExists(ctx, name)
+		}) {
+			return nil, &NotFoundError{Kind: "shared folder", Name: name}
+		}
 		return nil, fmt.Errorf("get share %q: %w", name, err)
 	}
 
-	return parseShare(data)
+	share, err := parseShare(data)
+	if err != nil {
+		return nil, err
+	}
+	// A successful envelope carrying no share is DSM saying the name is unknown,
+	// not a parse failure: parseShare fills in what it finds and leaves the rest
+	// zeroed, so an empty name is the only signal there is.
+	if share.Name == "" {
+		return nil, &NotFoundError{Kind: "shared folder", Name: name}
+	}
+	return share, nil
 }
 
 func (c *Client) ListShares(ctx context.Context) ([]Share, error) {
@@ -266,4 +281,20 @@ func parseShare(raw json.RawMessage) (*Share, error) {
 	}
 
 	return s, nil
+}
+
+// shareExists answers the same question as GetShare through `list`, which is
+// what makes a failed `get` decidable: DSM has no documented code for a shared
+// folder that is not there.
+func (c *Client) shareExists(ctx context.Context, name string) (bool, error) {
+	shares, err := c.ListShares(ctx)
+	if err != nil {
+		return false, err
+	}
+	for i := range shares {
+		if shares[i].Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }

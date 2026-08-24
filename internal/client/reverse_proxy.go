@@ -44,7 +44,12 @@ const (
 )
 
 var (
-	ErrReverseProxyNotFound         = errors.New("reverse proxy entry not found")
+	ErrReverseProxyNotFound = &NotFoundError{Kind: "reverse proxy entry"}
+
+	// Deliberately not a *NotFoundError. A missing access control profile is a
+	// *referenced* object that this provider does not own, so it is a
+	// configuration error to report, not drift that justifies dropping the
+	// reverse proxy entry from state.
 	ErrAccessControlProfileNotFound = errors.New("Login Portal access control profile not found")
 )
 

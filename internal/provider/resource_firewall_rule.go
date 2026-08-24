@@ -226,6 +226,9 @@ func (r *firewallRuleResource) Read(ctx context.Context, req resource.ReadReques
 
 	placement, err := r.client.GetFirewallRulePlacement(ctx, profile, adapter, name)
 	if err != nil {
+		if removeIfGone(ctx, resp, err, "firewall rule") {
+			return
+		}
 		resp.Diagnostics.AddError("Failed to read firewall rule", err.Error())
 		return
 	}

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var ErrPackageNotFound = errors.New("DSM package not found")
+var ErrPackageNotFound = &NotFoundError{Kind: "DSM package"}
 
 // Package Center operations are asynchronous on physical NAS devices. These
 // are variables so unit tests can use millisecond-scale polling.

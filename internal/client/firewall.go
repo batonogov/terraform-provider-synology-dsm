@@ -345,7 +345,16 @@ func (c *Client) GetFirewallRulePlacement(ctx context.Context, profileName, adap
 			return &FirewallRulePlacement{Rule: &rules[i], RuleCount: len(rules)}, nil
 		}
 	}
-	return nil, fmt.Errorf("firewall rule %q not found in profile %q adapter %q", name, profileName, adapter)
+	// A rule that is simply absent from a profile DSM returned is established
+	// absence, not a failed request: the profile read succeeded and the rule was
+	// not in it. Read turns this into a state removal (issue #131), which is why
+	// it must not be reachable from a transport or session failure — those come
+	// out of GetFirewallProfile above, untouched.
+	return nil, &NotFoundError{
+		Kind:  "firewall rule",
+		Name:  name,
+		Scope: fmt.Sprintf("in profile %q adapter %q", profileName, adapter),
+	}
 }
 
 // SetFirewallRule inserts or replaces one rule and writes the whole profile back.

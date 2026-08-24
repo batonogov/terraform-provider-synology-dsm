@@ -20,7 +20,7 @@ import (
 
 // ErrFileNotFound reports that a File Station path does not exist, so a caller
 // can turn a missing file into "drop it from state" instead of a hard failure.
-var ErrFileNotFound = errors.New("file not found")
+var ErrFileNotFound = &NotFoundError{Kind: "file"}
 
 // fileStationNoSuchFile is File Station's "no such file or directory" code. It
 // arrives either as a regular API error or, for getinfo, as a per-entry code
