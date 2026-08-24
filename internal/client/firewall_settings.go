@@ -298,6 +298,23 @@ func (c *Client) setFirewallSwitch(ctx context.Context, s FirewallSettings) erro
 				"rather than a wrong method name — switch the firewall in Control Panel -> Security -> Firewall and "+
 				"please report the DSM version: %w", err)
 	}
+	// 114 is "lost parameters for this API", and on virtual DSM 7.2.2 it is what
+	// this call answers to *every* parameter set tried: enable_firewall alone,
+	// with profile_name, with the name JSON-quoted, with profile_applying, with
+	// the on-disk names (status/profile), with the pair wrapped in a firewall= or
+	// settings= object, as 0/1 rather than false/true, and over both POST and GET.
+	// `get` on the same API answers normally in the same session, so this is not
+	// the session, the permission or the verb — DSM wants a parameter nobody has
+	// published. Saying so is better than surfacing a bare code that reads like a
+	// transient failure and invites a retry loop.
+	if IsAPIError(err, 114) {
+		return fmt.Errorf(
+			"set firewall switch: DSM answered 114 (a required parameter is missing) to SYNO.Core.Security.Firewall "+
+				"`set`. The write contract for the global switch is reconstructed rather than captured, and every "+
+				"parameter set this project has tried gets the same answer on DSM 7.2.2, while `get` works in the same "+
+				"session. Switch the firewall in Control Panel -> Security -> Firewall for now. What would fix this is "+
+				"one capture of that page's own request from browser devtools: %w", err)
+	}
 	return fmt.Errorf("set firewall switch: %w", err)
 }
 

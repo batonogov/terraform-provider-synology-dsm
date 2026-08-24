@@ -109,6 +109,10 @@ type adapterKeyedFixture struct {
 	lastSet string
 	sets    int
 	applies int
+
+	// switchError makes SYNO.Core.Security.Firewall `set` answer a DSM error
+	// code, so the client's handling of it can be asserted.
+	switchError int
 }
 
 func newAdapterKeyedFixture(t *testing.T, profile map[string]interface{}) (*Client, *adapterKeyedFixture) {
@@ -128,6 +132,10 @@ func newAdapterKeyedFixture(t *testing.T, profile map[string]interface{}) (*Clie
 			writeAPIData(w, map[string]interface{}{"enable_firewall": f.enabled, "profile_name": f.activeProfile})
 
 		case api == "SYNO.Core.Security.Firewall" && method == "set":
+			if f.switchError != 0 {
+				_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: &APIError{Code: f.switchError}})
+				return
+			}
 			f.enabled = r.FormValue("enable_firewall") == "true"
 			f.activeProfile = strings.Trim(r.FormValue("profile_name"), `"`)
 			_ = json.NewEncoder(w).Encode(APIResponse{Success: true})
@@ -541,5 +549,31 @@ func TestClient_SetFirewall_AdapterKeyedRefusesWhenAnEntryDidNotParse(t *testing
 	}
 	if f.sets != 0 {
 		t.Errorf("the profile was written %d time(s) despite the refusal", f.sets)
+	}
+}
+
+// TestClient_SetFirewall_Answers114WithWhatWasLearned covers the finding that
+// came out of running this client against a live virtual DSM 7.2.2: the global
+// switch answers 114 to every parameter set anyone has published, while `get`
+// works in the same session. A bare code reads like a transient failure and
+// invites a retry loop, so the client has to say what is actually known.
+func TestClient_SetFirewall_Answers114WithWhatWasLearned(t *testing.T) {
+	c, f := newAdapterKeyedFixture(t, capturedAdapterKeyedState())
+	f.switchError = 114
+
+	_, err := c.SetFirewall(context.Background(), SetFirewallRequest{
+		Profile:           "default",
+		Enabled:           true,
+		AllowLockout:      true,
+		AllowEmptyRuleSet: true,
+	})
+
+	if err == nil {
+		t.Fatal("expected the 114 to surface")
+	}
+	for _, want := range []string{"114", "required parameter is missing", "Control Panel", "devtools"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
 	}
 }
