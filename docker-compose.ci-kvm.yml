@@ -1,0 +1,9 @@
+# Hardware acceleration for the CI overlay, layered on only when /dev/kvm exists
+# on the runner. Kept in its own file because Compose resolves `devices` before
+# starting anything: naming a device the host does not have fails the whole `up`,
+# so this cannot be merged into docker-compose.ci.yml without making the
+# no-KVM case impossible to run at all.
+services:
+  dsm:
+    devices:
+      - /dev/kvm

@@ -1,0 +1,25 @@
+# CI overlay for docker-compose.test.yml, used only by .github/workflows/acceptance.yml.
+#
+# It carries what a GitHub-hosted runner needs and a Lima VM does not:
+#
+#   - /dev/net/tun and NET_ADMIN are what the vdsm/virtual-dsm image documents as
+#     required. Without them the container cannot set up the guest's network, so
+#     nothing ever answers on port 5000 and the only symptom is the wait script
+#     timing out — which is exactly how run 32616185796 failed, with no other
+#     trace anywhere in the logs.
+#   - The runner has 4 vCPUs and 16 GB of RAM, so the base file's 6 cores are
+#     more than exist and its 8 GB leaves the host uncomfortably tight while
+#     QEMU, Docker and the Go toolchain share the box.
+#
+# /dev/kvm is deliberately *not* here: a device that does not exist makes the
+# whole `up` fail before the container starts. The workflow adds
+# docker-compose.ci-kvm.yml on top when the runner actually exposes it.
+services:
+  dsm:
+    devices:
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    environment:
+      RAM_SIZE: "6G"
+      CPU_CORES: "4"
