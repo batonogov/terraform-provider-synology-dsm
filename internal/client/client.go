@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 const (
@@ -387,19 +389,77 @@ func (c *Client) executeRequest(ctx context.Context, params url.Values, httpMeth
 		}
 	}
 
+	tflog.Debug(ctx, "DSM request", map[string]interface{}{
+		"http_method": httpMethod,
+		"api":         params.Get("api"),
+		"api_method":  params.Get("method"),
+		"version":     params.Get("version"),
+		"url":         endpoint,
+		"params":      redactParams(params),
+	})
+
+	started := time.Now()
 	resp, err := c.clientFor(ctx).Do(req)
 	if err != nil {
+		tflog.Debug(ctx, "DSM request failed before a response", map[string]interface{}{
+			"api":        params.Get("api"),
+			"api_method": params.Get("method"),
+			"elapsed_ms": time.Since(started).Milliseconds(),
+			"error":      err.Error(),
+		})
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// Read the body whole rather than streaming it into the decoder: the same
+	// bytes have to serve both the decoder and the log, and a body that failed to
+	// parse is precisely the one worth seeing. DSM's envelopes are small; the two
+	// calls that are not (a file upload and a download) never come through here.
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read response body: %w", readErr)
+	}
+
+	tflog.Debug(ctx, "DSM response", map[string]interface{}{
+		"api":          params.Get("api"),
+		"api_method":   params.Get("method"),
+		"status":       resp.StatusCode,
+		"elapsed_ms":   time.Since(started).Milliseconds(),
+		"body":         truncate(string(body)),
+		"body_bytes":   len(body),
+		"content_type": resp.Header.Get("Content-Type"),
+	})
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		// A web page here rather than an envelope means the request handler died:
+		// DSM's own web server answers 502 (and on some builds 404) with its error
+		// page when synoscgi crashes. Confirmed against virtual DSM 7.2.2, where a
+		// firewall profile carrying any non-empty rule array does exactly this
+		// (see .pi/recon-firewall-vdsm-2026-08-24.md). Reporting it as a bare
+		// status plus a wall of HTML buries the one fact that matters.
+		if looksLikeHTML(body) {
+			return nil, fmt.Errorf(
+				"%s %s: DSM answered HTTP %d with a web page instead of a JSON envelope. That is what its web server "+
+					"returns when the request handler crashes rather than replying, so the payload most likely reached a "+
+					"part of DSM that could not parse it. The session is fine and nothing was necessarily written; "+
+					"run with TF_LOG=DEBUG to see the exact request body",
+				params.Get("api"), params.Get("method"), resp.StatusCode)
+		}
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		// A DSM that answers HTML here is not a parse problem to shrug at: it is
+		// how synoscgi reports having crashed, which is a real failure mode of the
+		// firewall APIs (see .pi/recon-firewall-vdsm-2026-08-24.md). Saying so
+		// beats "invalid character '<'".
+		if looksLikeHTML(body) {
+			return nil, fmt.Errorf(
+				"%s %s: DSM answered an HTML page instead of a JSON envelope, which is what its web server returns when "+
+					"the request handler crashes rather than replying; run with TF_LOG=DEBUG to see the exact request: %w",
+				params.Get("api"), params.Get("method"), err)
+		}
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
