@@ -131,6 +131,17 @@ Flow: `main.go` → `provider.New(version)` → `Configure()` creates `client.Ne
   - **`ModifyPlan` marks the attributes an apply rewrites as unknown.** Terraform carries computed attributes forward from prior state, so without it a changed file would plan its old `checksum` and be handed a new one after apply — "provider produced inconsistent result after apply" — and in write-only mode there would be no diff at all. This applies to every attribute the update path rewrites, not just the checksum: `dsm_file` re-reads the POSIX block from File Station, and `dsm_container_project` reports a new `status` and `container_ids` after a rebuild **and** after a plain `running` toggle, which is why the project's `ModifyPlan` reacts to `running` as well as to the compose document.
 - **parseX()** helpers use `map[string]interface{}` type assertions, not typed structs — matches the loose DSM API responses.
 
+## Debugging the DSM exchange
+
+Every request and response goes through `tflog.Debug` in `executeRequest`, so `TF_LOG=DEBUG` shows the API, the method, the parameters as sent, the HTTP status, the elapsed time and the response body. This exists because a user could not produce the one artifact needed to diagnose issue #130: the provider was silent about what it sent and what came back, and every wire contract in `internal/client` was reconstructed by somebody who could see the wire.
+
+Two rules hold, and `internal/client/logging_test.go` fails if either is broken:
+
+- **Credentials and session material never reach the log** (`secretParams` in `logging.go`). Passwords are obvious; `_sid`, `SynoToken` and `SynoConfirmPWToken` are the half that is easy to miss and matters as much, because a debug log's whole purpose is to be pasted into an issue and a lifted SID is a working DSM session. Documents — file contents, a private key, a compose project — are summarised by length instead (`bulkParams`): printing them helps nobody diagnose an API contract and is the fastest way to write a private key into a log.
+- **Ordinary parameters are logged verbatim.** The parameters this provider gets wrong are the ordinary ones — a JSON-quoted profile name, an adapter key DSM does not keep, a `shareinfo` field accepted and ignored — so redacting broadly to be safe would hide the very bug the log exists to find.
+
+**An HTML body is a crash, not a parse error.** DSM's web server serves its own error page (HTTP 502, on some builds 404) when synoscgi dies mid-request, and `looksLikeHTML` turns that into a sentence saying so. Confirmed against virtual DSM 7.2.2, where any non-empty rule array in a firewall profile does it every time. Reporting it as `invalid character '<'` sent readers after a provider bug that was not there.
+
 ## Provider data
 
 `Configure` hands resources and data sources a `*dsmProviderData` (not a bare `*client.Client`), because some resources need provider-level configuration as well as an API client. Use the helpers in `helpers.go`:
