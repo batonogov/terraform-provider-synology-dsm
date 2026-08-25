@@ -319,54 +319,81 @@ func TestClient_SetFirewall_RulesMapShapeIsWrittenBackUnchanged(t *testing.T) {
 	}
 }
 
-// The rule encoding for the adapter-keyed shape is unknown, and every candidate
-// crashes DSM's request parser rather than being rejected by it. So the write is
-// refused before anything reaches the wire — checked here by counting requests,
-// not only by the error, because an error raised after the send would already
-// have taken the NAS's web interface down.
-func TestClient_SetFirewallRule_AdapterKeyedRefusesToGuessTheRuleShape(t *testing.T) {
+// A rule written into the adapter-keyed shape goes out in DSM's own encoding:
+// ten snake_case fields with string values, exactly what DSM's web client sends
+// and what a physical NAS accepted and read back (issue #130).
+func TestClient_SetFirewallRule_AdapterKeyedWritesDSMsEncoding(t *testing.T) {
 	shrinkFirewallVerify(t)
 
 	c, f := newAdapterKeyedFixture(t, capturedAdapterKeyedState())
 
-	_, err := c.SetFirewallRule(context.Background(), SetFirewallRuleRequest{
+	if _, err := c.SetFirewallRule(context.Background(), SetFirewallRuleRequest{
 		Profile: "default",
-		Adapter: FirewallAdapterGlobal,
-		Rule:    managedDenyRule("Deny everything else", 0),
-	})
-	if err == nil {
-		t.Fatal("expected a refusal: no rule encoding is known for the adapter-keyed shape")
+		Adapter: "eth0",
+		Rule: FirewallRule{
+			Name: "web", Enabled: true, Action: FirewallActionAllow,
+			Protocol: FirewallProtocolTCP, Ports: []string{"443", "8000-8100"},
+			Sources: []string{"10.0.0.0/24"}, Priority: 0,
+		},
+		AllowLockout: true,
+	}); err != nil {
+		t.Fatalf("SetFirewallRule: %v", err)
+	}
+	if f.sets != 1 {
+		t.Fatalf("profile writes = %d, want 1", f.sets)
 	}
 
-	var unsupported *FirewallRuleWriteUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("expected *FirewallRuleWriteUnsupportedError, got %T: %v", err, err)
+	var sent map[string]interface{}
+	if err := json.Unmarshal([]byte(f.lastSet), &sent); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
 	}
-	if f.sets != 0 {
-		t.Fatalf("a payload that crashes synoscgi was sent %d time(s)", f.sets)
+	block, _ := sent["eth0"].(map[string]interface{})
+	rules, _ := block["rules"].([]interface{})
+	if len(rules) != 1 {
+		t.Fatalf("eth0 carries %d rule(s), want 1: %s", len(rules), f.lastSet)
 	}
-	if f.applies != 0 {
-		t.Errorf("the profile was applied %d time(s) despite the refusal", f.applies)
-	}
+	rule, _ := rules[0].(map[string]interface{})
 
-	for _, want := range []string{"Deny everything else", FirewallAdapterGlobal, "#130", "firewall.d"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("message does not mention %q: %s", want, err.Error())
+	for key, want := range map[string]interface{}{
+		"name": "web", "enable": true, "policy": "allow", "protocol": "tcp",
+		"port_group": "custom", "ports": "443,8000-8100", "port_direction": "destination",
+		"source_ip_group": "netmask", "source_ip": "10.0.0.0/24",
+	} {
+		if rule[key] != want {
+			t.Errorf("rule[%q] = %#v, want %#v", key, rule[key], want)
 		}
+	}
+
+	// The round trip closes through the fixture, which stores what it was sent.
+	profile, err := c.GetFirewallProfile(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("GetFirewallProfile: %v", err)
+	}
+	got := profile.Rules["eth0"]
+	if len(got) != 1 || got[0].Name != "web" {
+		t.Fatalf("rules read back = %+v, want the rule just written", got)
+	}
+	if !reflect.DeepEqual(got[0].Ports, []string{"443", "8000-8100"}) {
+		t.Errorf("ports read back as %v", got[0].Ports)
+	}
+	if !reflect.DeepEqual(got[0].Sources, []string{"10.0.0.0/24"}) {
+		t.Errorf("sources read back as %v", got[0].Sources)
 	}
 }
 
-// A profile that already holds rules created in the DSM UI can still have its
-// default policy managed, and the rules go back as the objects DSM sent.
+// A profile that already holds rules created in the DSM UI keeps them, and the
+// selectors this provider cannot model — a service preset, a GeoIP country —
+// go back exactly as DSM sent them rather than being replaced with a guess.
 //
-// This is the case that decides whether dsm_firewall is usable at all: a `set`
-// carries the whole profile, so refusing whenever a rule is present anywhere
-// would take the resource away from every NAS that actually uses its firewall.
-// Handing DSM back its own objects needs no encoding, which is the thing nobody
-// knows how to do.
-func TestClient_SetFirewall_AdapterKeyedEchoesRulesItDidNotAuthor(t *testing.T) {
-	manual := allowAllRule("made in the DSM UI")
-	manual["labelList"] = []interface{}{"from-the-ui"}
+// A `set` carries the whole profile, so this is what decides whether the
+// resource is usable on a NAS that actually uses its firewall.
+func TestClient_SetFirewall_AdapterKeyedPreservesRulesItDidNotAuthor(t *testing.T) {
+	manual := map[string]interface{}{
+		"enable": true, "log": false, "name": "made in the DSM UI", "policy": "allow",
+		"port_direction": "destination", "port_group": "service", "ports": "ssh,cifs",
+		"protocol": "tcp", "source_ip": "RU", "source_ip_group": "geoip",
+		"someFutureField": "keep-me",
+	}
 
 	state := capturedAdapterKeyedState()
 	state["eth0"] = map[string]interface{}{
@@ -399,11 +426,18 @@ func TestClient_SetFirewall_AdapterKeyedEchoesRulesItDidNotAuthor(t *testing.T) 
 	if !ok || len(rules) != 1 {
 		t.Fatalf("eth0 rules = %#v, want the one rule DSM sent", block["rules"])
 	}
+	rule, _ := rules[0].(map[string]interface{})
 
-	wantJSON, _ := json.Marshal(manual)
-	gotJSON, _ := json.Marshal(rules[0])
-	if string(gotJSON) != string(wantJSON) {
-		t.Errorf("rule was re-rendered rather than echoed:\n got  %s\n want %s", gotJSON, wantJSON)
+	// The unmodelled selectors must be untouched: guessing at a service preset or
+	// a country list would rewrite somebody's rule into a different rule.
+	for key, want := range map[string]interface{}{
+		"port_group": "service", "ports": "ssh,cifs",
+		"source_ip_group": "geoip", "source_ip": "RU",
+		"someFutureField": "keep-me",
+	} {
+		if rule[key] != want {
+			t.Errorf("rule[%q] = %#v, want %#v — an unmodelled field was rewritten", key, rule[key], want)
+		}
 	}
 	if policy, _ := sent["global"].(map[string]interface{}); policy["policy"] != "drop" {
 		t.Errorf("global policy = %v, want drop — the change this write existed for", policy["policy"])

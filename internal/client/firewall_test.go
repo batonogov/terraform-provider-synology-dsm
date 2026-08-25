@@ -996,15 +996,3 @@ func TestEvaluateFirewall(t *testing.T) {
 		t.Errorf("an unmodelled rule must produce an indeterminate verdict, got %+v", v)
 	}
 }
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}

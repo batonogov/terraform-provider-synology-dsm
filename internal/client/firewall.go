@@ -428,27 +428,25 @@ func (e *FirewallProfileShapeError) Error() string {
 		e.Profile, keys)
 }
 
-// FirewallRuleWriteUnsupportedError reports a refused write: the profile was
-// read in the adapter-keyed shape, and no rule encoding is known for that shape.
+// FirewallRuleWriteUnsupportedError reports a refused write: DSM sent a rule
+// entry this provider could not read, and rewriting the profile would delete it.
 //
-// This is a deliberate dead end rather than an oversight. Writing the *policy*
-// of an adapter-keyed profile is confirmed to work -- that round trip was
-// captured on virtual DSM 7.2.2 -- but every candidate encoding of a rule inside
-// one crashes synoscgi outright: the on-disk object from fwDB.hpp, the
-// string-enum variant two published clients send, snake_case, a rule carrying
-// only a name, and even a bare `[{}]` all make DSM answer with its HTML error
-// page instead of JSON, because the request never survives the parser. A crashed
-// synoscgi takes DSM's whole web interface down with it.
+// Every write here is read-modify-write of the whole profile, so an entry the
+// parser could not turn into a rule has nothing to hand back — sending the rest
+// would drop it silently. Refusing is the only way to leave somebody's firewall
+// intact, and losing a rule is exactly the class of bug that hides until traffic
+// nobody expected gets through.
 //
-// So the provider does the one honest thing available and refuses to send the
-// payload. Guessing again on somebody else's NAS is not a debugging strategy,
-// and this is a security control: a wrong guess that *did* parse would be worse
-// than one that did not.
+// This used to mean something much broader: that no rule encoding was known for
+// the adapter-keyed shape at all, so *any* rule write was refused. That is no
+// longer true — the encoding was read out of DSM's own web client and confirmed
+// by writing to a NAS and reading it back (issue #130, firewall_rule_wire.go).
 type FirewallRuleWriteUnsupportedError struct {
 	Profile string
-	// Adapters names the adapters that would carry at least one rule, sorted.
+	// Adapters names the adapters holding an unreadable entry, sorted.
 	Adapters []string
-	// Rules names the rules that would have been sent, sorted.
+	// Rules names the readable rules that share those adapters, sorted. They are
+	// not the problem; they are listed because the refusal blocks them too.
 	Rules []string
 }
 
@@ -456,25 +454,19 @@ func (e *FirewallRuleWriteUnsupportedError) Error() string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b,
-		"this DSM answers SYNO.Core.Security.Firewall.Profile `get` in the adapter-keyed shape "+
-			"({\"name\": ..., \"<adapter>\": {\"policy\": \"drop\", \"rules\": [...]}}), and no encoding of a firewall rule "+
-			"inside that shape is known to work: every published and probed form makes DSM's own request parser crash, so "+
-			"synoscgi answers an HTML error page rather than JSON and the DSM web interface goes down with it. The provider "+
-			"therefore refuses to send it. Nothing was written to profile %q",
+		"SYNO.Core.Security.Firewall.Profile %q holds a rule entry this provider could not read, and every write here "+
+			"replaces the whole profile — sending it would delete that entry without saying so, so nothing was written",
 		e.Profile)
 
-	if len(e.Rules) > 0 {
-		fmt.Fprintf(&b, "; the write would have carried %s", strings.Join(quoteAll(e.Rules), ", "))
-	}
 	if len(e.Adapters) > 0 {
-		fmt.Fprintf(&b, " under adapter(s) %s", strings.Join(quoteAll(e.Adapters), ", "))
+		fmt.Fprintf(&b, "; the unreadable entry is under adapter(s) %s", strings.Join(quoteAll(e.Adapters), ", "))
+	}
+	if len(e.Rules) > 0 {
+		fmt.Fprintf(&b, ", alongside %s", strings.Join(quoteAll(e.Rules), ", "))
 	}
 
-	b.WriteString(". Managing the firewall's default policy (`dsm_firewall`) is unaffected: that write is confirmed to " +
-		"round-trip in this shape. What is missing is one capture of a profile that actually holds rules -- either " +
-		"`cat /usr/syno/etc/firewall.d/*.json` over SSH, or the raw response of " +
-		"SYNO.Core.Security.Firewall.Profile `get` from a NAS where a rule was created in Control Panel -> Security -> " +
-		"Firewall. With that, the encoding stops being a guess. See issue #130")
+	b.WriteString(". Please report the profile's raw `get` response on issue #130 — the rule encoding is confirmed for " +
+		"the fields DSM's own web client writes, so an entry that does not parse is a field nobody has captured yet")
 
 	return b.String()
 }
@@ -1505,27 +1497,20 @@ func (p *FirewallProfile) toWireRulesMap() map[string]interface{} {
 }
 
 // toWireAdapterKeyed renders {"name": ..., "<adapter>": {"policy": "drop",
-// "rules": []}}, the shape a live DSM answers with — and refuses outright to
-// render a rule into it.
+// "rules": [...]}}, the shape a live DSM answers with, rules included.
 //
-// The refusal is the safety property, not a limitation being worked around. The
-// policy half of this shape is confirmed to round-trip on virtual DSM 7.2.2; the
-// rule half has no known encoding, and every candidate crashes DSM's request
-// parser rather than being rejected by it, which takes the NAS's web interface
-// down. "I do not know how to write this" is the only true thing the provider
-// can say, and saying it costs an operator an error message where guessing costs
-// them a firewall.
+// Both halves are CONFIRMED against physical DSM 7 (issue #130): the policy
+// round-trips, and so does every rule field, in the encoding
+// firewall_rule_wire.go documents. This used to refuse to render a rule at all,
+// because the encoding was unknown and every guess crashed synoscgi rather than
+// being rejected by it. The encoding is no longer a guess — it was read out of
+// DSM's own web client and then written to a NAS and read back — so the refusal
+// is gone and only genuinely unreadable entries block a write.
 //
-// The refusal is drawn around *encoding*, not around the presence of rules. A
-// rule DSM sent and this write hands back unchanged goes out as the very object
-// DSM produced, which is by construction a form DSM can read — that is what its
-// own web interface does every time somebody saves the firewall page. A rule the
-// provider had to build from its model is the one nobody knows how to spell, and
-// that is what gets refused. Drawing the line around presence instead would take
-// `dsm_firewall` away from every NAS that has a rule, which is every NAS that
-// uses its firewall, in exchange for no extra safety.
+// The render still starts from what DSM sent, so keys the provider does not
+// model ride along untouched.
 func (p *FirewallProfile) toWireAdapterKeyed() (map[string]interface{}, error) {
-	if err := p.refuseConstructedRules(); err != nil {
+	if err := p.refuseUnreadableRules(); err != nil {
 		return nil, err
 	}
 
@@ -1548,11 +1533,10 @@ func (p *FirewallProfile) toWireAdapterKeyed() (map[string]interface{}, error) {
 
 		rules, hadRulesKey := p.Rules[adapter]
 		if hadRulesKey || !known {
-			// Every rule here is one DSM sent, verified unchanged by
-			// refuseConstructedRules, so each goes back as the object DSM produced
-			// rather than as anything this provider rendered. Order is this
-			// provider's to decide (issue #122): the array index is the priority,
-			// and reordering objects does not reshape them.
+			// Each rule is rendered from its own raw object outwards, so a field the
+			// provider does not model survives and a selector it could not read is
+			// handed back exactly as DSM sent it. Order is this provider's to decide
+			// (issue #122): the array index is the priority.
 			//
 			// An adapter DSM never mentioned gets the key anyway, because the write
 			// that was actually captured carries `"rules": []` on every adapter block
@@ -1560,7 +1544,11 @@ func (p *FirewallProfile) toWireAdapterKeyed() (map[string]interface{}, error) {
 			// without a rules key keeps it that way.
 			wire := make([]interface{}, 0, len(rules))
 			for i := range rules {
-				wire = append(wire, rules[i].raw)
+				rendered, err := rules[i].toWireAdapterKeyed()
+				if err != nil {
+					return nil, err
+				}
+				wire = append(wire, rendered)
 			}
 			block["rules"] = wire
 		}
@@ -1570,45 +1558,31 @@ func (p *FirewallProfile) toWireAdapterKeyed() (map[string]interface{}, error) {
 	return out, nil
 }
 
-// refuseConstructedRules refuses a write that would have to spell a rule out.
+// refuseUnreadableRules refuses a write that would silently delete a rule.
 //
-// Three things make a rule un-echoable, and each is a different way of losing
-// somebody's firewall:
+// A profile write replaces the adapter's whole rule list, and the list is built
+// from the model. An entry the parser could not read (unparsedRules) has no
+// model to render, so it would simply be absent from the payload — the operator
+// loses a firewall rule and nothing says so. Refusing keeps the profile intact
+// at the cost of an error message.
 //
-//   - it carries no raw object, so it was built from the model — a rule being
-//     created or replaced. Its encoding is the unknown one, and every candidate
-//     tried so far crashes DSM's request parser rather than being rejected by
-//     it, taking the web interface down with it;
-//   - the model no longer agrees with the object DSM sent, so an edit is being
-//     written. Same problem: the changed field has to be rendered;
-//   - the parser could not read an entry at all (unparsedRules). Nothing was
-//     kept to hand back, and sending the rest would delete that entry quietly.
-//
-// A rule that fails none of these goes back exactly as it arrived, which needs
-// no encoding at all.
-func (p *FirewallProfile) refuseConstructedRules() error {
+// Rules that parsed are not refused, however much the model has since diverged
+// from the object DSM sent: rendering them is exactly what this provider now
+// knows how to do (firewall_rule_wire.go).
+func (p *FirewallProfile) refuseUnreadableRules() error {
 	var adapters, names []string
 	seen := map[string]bool{}
 
 	for _, adapter := range p.adapterKeys() {
-		refused := false
-
-		if p.unparsedRules[adapter] > 0 {
-			refused = true
+		if p.unparsedRules[adapter] == 0 {
+			continue
 		}
+		adapters = append(adapters, adapter)
 		for _, rule := range p.Rules[adapter] {
-			if firewallRuleIsEcho(rule) {
-				continue
-			}
-			refused = true
-			if !seen[rule.Name] {
+			if rule.Name != "" && !seen[rule.Name] {
 				seen[rule.Name] = true
 				names = append(names, rule.Name)
 			}
-		}
-
-		if refused {
-			adapters = append(adapters, adapter)
 		}
 	}
 
@@ -1618,25 +1592,6 @@ func (p *FirewallProfile) refuseConstructedRules() error {
 	sort.Strings(adapters)
 	sort.Strings(names)
 	return &FirewallRuleWriteUnsupportedError{Profile: p.Name, Adapters: adapters, Rules: names}
-}
-
-// firewallRuleIsEcho reports whether a rule can be handed back to DSM as the
-// object DSM sent, with nothing rendered.
-//
-// The comparison runs the raw object back through the parser and asks whether
-// the model still agrees with it, reusing the same field comparison the
-// read-after-write check uses. Comparing the parsed forms rather than the maps
-// is what keeps a rule DSM merely re-serialised — a reordered key, a number
-// written differently — from being mistaken for an edit.
-func firewallRuleIsEcho(rule FirewallRule) bool {
-	if rule.raw == nil {
-		return false
-	}
-	original := parseFirewallRule(rule.raw)
-	if original == nil || original.Name != rule.Name {
-		return false
-	}
-	return len(firewallRuleMismatches(rule, *original)) == 0
 }
 
 // adapterKeys lists every adapter the profile knows about, from either map,
@@ -2148,6 +2103,14 @@ func parseFirewallRuleList(list []interface{}) ([]FirewallRule, int) {
 // parseFirewallRule turns one DSM rule object into the provider's model, keeping
 // the original map so a later write can put back everything it did not touch.
 func parseFirewallRule(m map[string]interface{}) *FirewallRule {
+	// Two encodings exist and they are not interchangeable. The adapter-keyed one
+	// is what DSM's webapi speaks (CONFIRMED on hardware, issue #130); the one
+	// below is what libsynofirewall writes to disk. Which one an object is in is
+	// read off the object, never assumed from context.
+	if looksLikeAdapterKeyedRule(m) {
+		return parseAdapterKeyedRule(m)
+	}
+
 	rule := &FirewallRule{
 		raw:      m,
 		Action:   FirewallActionAllow,
