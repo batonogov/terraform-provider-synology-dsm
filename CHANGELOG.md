@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.6.0...v0.7.0) (2026-08-25)
+
+
+### Features
+
+* write firewall rules in the encoding DSM actually speaks ([#130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130)) ([#140](https://github.com/batonogov/terraform-provider-synology-dsm/issues/140)) ([748b338](https://github.com/batonogov/terraform-provider-synology-dsm/commit/748b338a1463394ea802799a8366e7b5553c9cb4))
+
+
+### Bug Fixes
+
+* decide the firewall profile shape from its values, not its key names ([#130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130)) ([#138](https://github.com/batonogov/terraform-provider-synology-dsm/issues/138)) ([ea66e84](https://github.com/batonogov/terraform-provider-synology-dsm/commit/ea66e8497f207cfa7c3b568b6f812d2c883c4c82))
+
 ## [0.6.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.5.0...v0.6.0) (2026-08-24)
 
 
