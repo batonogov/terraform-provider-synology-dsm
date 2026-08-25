@@ -458,14 +458,12 @@ func appendFirewallSettingsDiagnostic(diags *diag.Diagnostics, summary string, e
 	var unsupported *client.FirewallRuleWriteUnsupportedError
 	if errors.As(err, &unsupported) {
 		diags.AddError(
-			"This DSM's firewall rules cannot be written by the provider",
+			"This firewall profile holds a rule the provider cannot read",
 			unsupported.Error()+
-				"\n\nNothing was written. Rules DSM sent are handed back untouched, so an ordinary default-policy change goes "+
-				"through even on a profile full of rules; this refusal means the write would have had to render a rule — one "+
-				"is being created or edited, or an entry in the profile could not be read and would have been dropped. Make "+
-				"that rule change in Control Panel -> Security -> Firewall for now, and see "+
-				"https://github.com/batonogov/terraform-provider-synology-dsm/issues/130 for the one capture that would lift "+
-				"this.",
+				"\n\nNothing was written. A `set` carries the whole profile, so a default-policy change has to rewrite the "+
+				"rule lists as well — and an entry that could not be read has nothing to write back, so it would have been "+
+				"dropped silently. Please report the profile's raw `get` response at "+
+				"https://github.com/batonogov/terraform-provider-synology-dsm/issues/130, with anything sensitive removed.",
 		)
 		return
 	}

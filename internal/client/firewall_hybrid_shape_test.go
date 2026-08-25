@@ -127,27 +127,56 @@ func TestClient_SetFirewall_HybridShapeWritesAdapterKeyed(t *testing.T) {
 	}
 }
 
-// And a rule is still refused rather than guessed at, without anything reaching
-// the wire. Before this fix the same call was sent as an on-disk profile and
-// silently discarded; a refusal is the honest answer until a capture of a
-// profile that holds rules exists.
-func TestClient_SetFirewallRule_HybridShapeRefusesRatherThanDiscards(t *testing.T) {
+// And on this same NAS a rule now writes. Before, this call was sent as an
+// on-disk profile and silently discarded; then it was refused outright, because
+// no rule encoding was known. The encoding is known now, so the honest answer is
+// to write the rule — in the shape DSM's own web client uses.
+func TestClient_SetFirewallRule_HybridShapeWritesTheRule(t *testing.T) {
 	shrinkFirewallVerify(t)
 
 	c, f := newAdapterKeyedFixture(t, hybridProfileState())
 
-	_, err := c.SetFirewallRule(context.Background(), SetFirewallRuleRequest{
-		Profile: "default",
-		Adapter: FirewallAdapterGlobal,
-		Rule:    managedDenyRule("Deny everything else", 0),
-	})
-
-	var unsupported *FirewallRuleWriteUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("expected *FirewallRuleWriteUnsupportedError, got %T: %v", err, err)
+	if _, err := c.SetFirewallRule(context.Background(), SetFirewallRuleRequest{
+		Profile:      "default",
+		Adapter:      FirewallAdapterGlobal,
+		Rule:         managedDenyRule("Deny everything else", 0),
+		AllowLockout: true,
+	}); err != nil {
+		t.Fatalf("SetFirewallRule: %v", err)
 	}
-	if f.sets != 0 {
-		t.Fatalf("a payload that crashes synoscgi was sent %d time(s)", f.sets)
+	if f.sets != 1 {
+		t.Fatalf("profile writes = %d, want 1", f.sets)
+	}
+
+	var sent map[string]interface{}
+	if err := json.Unmarshal([]byte(f.lastSet), &sent); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	global, _ := sent[FirewallAdapterGlobal].(map[string]interface{})
+	rules, _ := global["rules"].([]interface{})
+	if len(rules) != 1 {
+		t.Fatalf("payload carries %d rule(s), want 1: %s", len(rules), f.lastSet)
+	}
+	rule, _ := rules[0].(map[string]interface{})
+
+	// The ten fields DSM's web client sends, in DSM's spelling. "deny" is the
+	// provider's word; on the wire it must be "drop", or DSM stores the rule as
+	// "none" and it stops denying anything.
+	for key, want := range map[string]interface{}{
+		"name": "Deny everything else", "enable": true, "policy": "drop",
+		"port_group": "all", "ports": "all", "port_direction": "destination",
+		"protocol": "all", "source_ip": "all", "source_ip_group": "all",
+	} {
+		if rule[key] != want {
+			t.Errorf("rule[%q] = %v, want %v", key, rule[key], want)
+		}
+	}
+
+	// And none of the on-disk keys may ride along: those are what crashed synoscgi.
+	for _, forbidden := range []string{"ruleIndex", "ipGroup", "ipList", "ipType", "portGroup", "portList", "direct"} {
+		if _, ok := rule[forbidden]; ok {
+			t.Errorf("rule carries on-disk key %q, which this DSM's parser does not survive: %s", forbidden, f.lastSet)
+		}
 	}
 }
 

@@ -63,16 +63,16 @@ func (r *firewallRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 			"~> **The firewall can lock you out.** Before every write the provider replays the resulting rule set against its own " +
 			"DSM session and refuses the change if that session would be denied. Set `allow_lockout = true` to override. " +
 			"Deleting the last rule of an enabled profile is refused for the same reason; override with `allow_empty_rule_set = true`.\n\n" +
-			"~> **Rules cannot be written on every DSM.** A profile captured from DSM 7.2.2 is *adapter-keyed* — " +
-			"`{\"name\": \"default\", \"global\": {\"policy\": \"none\", \"rules\": []}}` — and no encoding of a rule " +
-			"inside that shape is known: every candidate makes DSM's own request parser crash and takes the DSM web interface " +
-			"down with it. Rather than guess, the provider refuses the write and says so. Reading rules works on either shape, " +
-			"and `dsm_firewall` (the global switch and the default policy) is unaffected. See " +
-			"[issue #130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130) for the one capture that " +
-			"would lift this.\n\n" +
-			"~> The DSM firewall API is undocumented. The rule field names come from Synology's own `fwDB.hpp` and have not " +
-			"been verified against physical hardware; see the provider README before using this on a NAS you cannot reach " +
-			"physically.\n\n" +
+			"~> **A rule DSM created is edited, not rebuilt.** Selectors this provider does not model — a service preset such " +
+			"as `ssh`, a GeoIP country — are written back exactly as DSM sent them, and a selector that did not change keeps " +
+			"DSM's own spelling. What the provider will not do is rewrite a profile holding an entry it could not read at " +
+			"all: a write replaces the whole rule list, so that entry would be deleted silently. It refuses instead and names " +
+			"the adapter.\n\n" +
+			"~> The DSM firewall API is undocumented. The rule encoding was reconstructed from DSM's own web client and the " +
+			"webapi shim, then confirmed against a physical DSM 7 (issue " +
+			"[#130](https://github.com/batonogov/terraform-provider-synology-dsm/issues/130)) — but only by writing to an " +
+			"*inactive* profile. No rule from this provider has been loaded into a live packet filter, so read the provider " +
+			"README before using this on a NAS you cannot reach physically.\n\n" +
 			"~> **A successful response from DSM is not proof.** DSM answers `success` to a profile object it does not " +
 			"understand and stores nothing (issue #130). Every write and every delete is therefore read back from the NAS " +
 			"before it is reported as done, and a change that did not take becomes an error rather than a resource in state " +
@@ -508,18 +508,17 @@ func appendFirewallDiagnostic(diags *diag.Diagnostics, summary string, err error
 	var unsupported *client.FirewallRuleWriteUnsupportedError
 	if errors.As(err, &unsupported) {
 		diags.AddError(
-			"This DSM's firewall rules cannot be written by the provider",
+			"This firewall profile holds a rule the provider cannot read",
 			unsupported.Error()+
-				"\n\nNothing was written, and nothing on the NAS changed. Manage the rules in Control Panel -> Security -> "+
-				"Firewall for now; `dsm_firewall` (the global switch and the per-adapter default policy) still works, and so "+
-				"do the `dsm_firewall_rule` / `dsm_firewall_rules` data sources, which read the rules DSM already has.\n\n"+
-				"To lift this, one capture is needed at https://github.com/batonogov/terraform-provider-synology-dsm/issues/130 "+
-				"— from a NAS where a firewall rule exists, either\n\n"+
-				"    cat /usr/syno/etc/firewall.d/*.json\n\n"+
-				"over SSH, or the raw response of\n\n"+
+				"\n\nNothing was written, and nothing on the NAS changed. A profile write replaces the adapter's whole rule "+
+				"list, so an entry that could not be read would have been deleted without saying so — the refusal keeps the "+
+				"profile intact.\n\nPlease report the profile's raw response at "+
+				"https://github.com/batonogov/terraform-provider-synology-dsm/issues/130:\n\n"+
 				"    curl -s '<dsm>/webapi/entry.cgi?api=SYNO.Core.Security.Firewall.Profile&version=1&method=get"+
 				"&name=default&_sid=<sid>&SynoToken=<token>'\n\n"+
-				"with anything sensitive removed, plus your exact DSM version (Control Panel -> Info Center).",
+				"with anything sensitive removed, plus your exact DSM version (Control Panel -> Info Center). The rule "+
+				"encoding is confirmed for every field DSM's own web client writes, so an entry that does not parse carries "+
+				"something nobody has captured yet.",
 		)
 		return
 	}
