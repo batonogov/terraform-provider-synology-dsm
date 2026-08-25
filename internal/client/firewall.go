@@ -482,11 +482,27 @@ func (e *FirewallRuleWriteUnsupportedError) Error() string {
 // firewallAdapterBlocks picks out the top-level keys of an adapter-keyed profile:
 // the ones whose value is an object carrying a policy, a rule list, or both.
 //
-// `name` is a string and so never matches, and a legacy profile's `rules` and
-// `adapterPolicyMap` are checked for before this is ever called.
+// `name` is a string and so never matches. `rules` and `adapterPolicyMap` are
+// skipped by name, and that is load-bearing rather than tidiness: a DSM 7
+// captured for issue #130 answers with *both* a real adapter block and two
+// sibling keys carrying the same {policy, rules} shape --
+//
+//	{"adapterPolicyMap": {"policy": "none", "rules": []},
+//	 "global":           {"policy": "none", "rules": []},
+//	 "name":             "default",
+//	 "rules":            {"policy": "none", "rules": []}}
+//
+// Those two are the on-disk shape's own key names leaking into the adapter-keyed
+// rendering, not interfaces. Reading them as adapters invents two of them, which
+// is where the reported "the profile came back with adapter(s) \"policy\",
+// \"rules\"" came from. They stay in `raw` and ride back out of a write
+// untouched; nothing here is a name a network interface can have.
 func firewallAdapterBlocks(m map[string]interface{}) map[string]map[string]interface{} {
 	out := map[string]map[string]interface{}{}
 	for key, value := range m {
+		if key == firewallRulesKey || key == firewallPolicyMapKey {
+			continue
+		}
 		block, ok := value.(map[string]interface{})
 		if !ok {
 			continue
@@ -1925,13 +1941,22 @@ func firewallProtocolFromWire(protocol int) string {
 
 // parseFirewallProfile turns a `Profile get` response into the provider's model.
 //
-// The shape is decided from the response itself. A top-level `rules` or
-// `adapterPolicyMap` key means the on-disk shape from Synology's fwDB.hpp;
-// otherwise, top-level keys whose value is an object carrying `policy` or
-// `rules` mean the adapter-keyed shape a live DSM answers with. A response that
-// is neither is a FirewallProfileShapeError rather than an empty profile: every
-// write here is read-modify-write, so an unrecognised response taken at face
-// value would be written straight back and would replace the operator's rules.
+// The shape is decided from the response itself, and from the *values* rather
+// than from the key names. A top-level `rules` whose entries are rule arrays, or
+// an `adapterPolicyMap` whose entries are policies, means the on-disk shape from
+// Synology's fwDB.hpp; top-level keys whose value is an object carrying `policy`
+// or `rules` mean the adapter-keyed shape a live DSM answers with. A response
+// that is neither is a FirewallProfileShapeError rather than an empty profile:
+// every write here is read-modify-write, so an unrecognised response taken at
+// face value would be written straight back and would replace the operator's
+// rules.
+//
+// Keying the decision on the presence of `rules`/`adapterPolicyMap` was the
+// second half of issue #130. A DSM 7 answers adapter-keyed *and* repeats those
+// two names as sibling {policy, rules} objects (see firewallAdapterBlocks), so
+// the old test picked the on-disk shape for a NAS that speaks the other one --
+// and toWire then wrote back a profile DSM answers `success: true` to and
+// discards. Hence: both keys must look the part, not merely be present.
 func parseFirewallProfile(raw json.RawMessage, name string) (*FirewallProfile, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -1947,23 +1972,97 @@ func parseFirewallProfile(raw json.RawMessage, name string) (*FirewallProfile, e
 		profile.Name = v
 	}
 
-	_, hasRulesKey := m["rules"]
-	_, hasPolicyMapKey := m["adapterPolicyMap"]
-	if hasRulesKey || hasPolicyMapKey {
+	rulesValue, hasRulesKey := m[firewallRulesKey]
+	policyValue, hasPolicyMapKey := m[firewallPolicyMapKey]
+	onDisk := looksLikeFirewallRulesMap(rulesValue) || looksLikeFirewallPolicyMap(policyValue)
+
+	// An adapter block outranks a bare `rules`/`adapterPolicyMap` key, because
+	// only one of the two readings can be right and a real adapter entry is
+	// evidence while a key name is not.
+	if blocks := firewallAdapterBlocks(m); !onDisk && len(blocks) > 0 {
+		profile.shape = firewallShapeAdapterKeyed
+		parseFirewallAdapterKeyedProfile(profile, blocks)
+		return profile, nil
+	}
+
+	// Either the on-disk shape carrying content, or an empty profile in it:
+	// `{"rules": {}, "adapterPolicyMap": {}}` says nothing about its entries, and
+	// there are no adapter blocks to prefer over it.
+	if onDisk || hasRulesKey || hasPolicyMapKey {
 		profile.shape = firewallShapeRulesMap
 		profile.rulesKeyPresent = hasRulesKey
 		parseFirewallRulesMapProfile(profile, m)
 		return profile, nil
 	}
 
-	blocks := firewallAdapterBlocks(m)
-	if len(blocks) == 0 {
-		return nil, &FirewallProfileShapeError{Profile: name, Keys: sortedAnyKeys(m)}
-	}
+	return nil, &FirewallProfileShapeError{Profile: name, Keys: sortedAnyKeys(m)}
+}
 
-	profile.shape = firewallShapeAdapterKeyed
-	parseFirewallAdapterKeyedProfile(profile, blocks)
-	return profile, nil
+// The two top-level key names of the on-disk shape. They are also the two names
+// a DSM 7 repeats as sibling adapter blocks in the adapter-keyed shape, which is
+// why every use of them is guarded by a look at the value.
+const (
+	firewallRulesKey     = "rules"
+	firewallPolicyMapKey = "adapterPolicyMap"
+)
+
+// looksLikeFirewallAdapterBlock reports whether an object is one adapter's
+// {"policy": ..., "rules": [...]} entry rather than a map keyed by adapter name.
+//
+// The distinction is only ever needed for the two objects DSM sends under the
+// on-disk shape's own key names; everywhere else the key tells you.
+func looksLikeFirewallAdapterBlock(m map[string]interface{}) bool {
+	if policy, ok := m["policy"]; ok {
+		if _, ok := firewallAdapterPolicyFromWire(policy); ok {
+			return true
+		}
+	}
+	if rules, ok := m["rules"]; ok {
+		if rules == nil {
+			return true
+		}
+		if _, ok := rules.([]interface{}); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeFirewallRulesMap reports whether a value is the on-disk `rules`:
+// an object mapping adapter names to rule arrays.
+//
+// Empty is not enough to go on and answers no -- `{}` is the same object in both
+// shapes, and the caller falls back to the key name when there is nothing else.
+func looksLikeFirewallRulesMap(value interface{}) bool {
+	m, ok := value.(map[string]interface{})
+	if !ok || len(m) == 0 || looksLikeFirewallAdapterBlock(m) {
+		return false
+	}
+	for _, v := range m {
+		if v == nil {
+			// DSM answers an adapter with no rules as null as readily as [].
+			continue
+		}
+		if _, ok := v.([]interface{}); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// looksLikeFirewallPolicyMap reports whether a value is the on-disk
+// `adapterPolicyMap`: an object mapping adapter names to policies.
+func looksLikeFirewallPolicyMap(value interface{}) bool {
+	m, ok := value.(map[string]interface{})
+	if !ok || len(m) == 0 || looksLikeFirewallAdapterBlock(m) {
+		return false
+	}
+	for _, v := range m {
+		if _, ok := firewallAdapterPolicyFromWire(v); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // parseFirewallRulesMapProfile reads {"rules": {<adapter>: [...]},
