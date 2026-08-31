@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.7.0...v0.8.0) (2026-08-31)
+
+
+### Features
+
+* dsm_registry_credential — registry entries with a write-only password ([#141](https://github.com/batonogov/terraform-provider-synology-dsm/issues/141)) ([92bdff5](https://github.com/batonogov/terraform-provider-synology-dsm/commit/92bdff52bf51e30ad07c91de672c800c8ce87225))
+
 ## [0.7.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.6.0...v0.7.0) (2026-08-25)
 
 
