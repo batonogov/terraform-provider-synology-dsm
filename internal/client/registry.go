@@ -86,10 +86,12 @@ func (c *Client) CreateRegistry(ctx context.Context, name, registryURL, username
 	return nil
 }
 
-// DeleteRegistry removes a registry entry. The built-in Docker Hub entry
-// (syno: true) is rejected by DSM itself.
-func (c *Client) DeleteRegistry(ctx context.Context, registryURL string) error {
+// DeleteRegistry removes a registry entry. DSM's delete call wants the
+// entry name as well as the URL — a bare url is "invalid parameter" (code
+// 101). The built-in Docker Hub entry (syno: true) is rejected by DSM itself.
+func (c *Client) DeleteRegistry(ctx context.Context, name, registryURL string) error {
 	params := url.Values{}
+	params.Set("name", jsonString(name))
 	params.Set("url", jsonString(registryURL))
 	if _, err := c.DoAPIPost(ctx, "SYNO.Docker.Registry", "1", "delete", params); err != nil {
 		return fmt.Errorf("delete registry %q: %w", registryURL, err)
