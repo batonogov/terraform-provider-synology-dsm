@@ -53,6 +53,17 @@ func TestAccPreCheckContainerProject(t *testing.T) {
 	}
 }
 
+// TestAccPreCheckRegistry gates the registry credential acceptance tests.
+// Container Manager is unavailable on virtual DSM, so these tests need real
+// hardware — like the container project ones, but lighter: they only touch
+// the registry list. Set DSM_ACC_REGISTRY=1 to opt in.
+func TestAccPreCheckRegistry(t *testing.T) {
+	TestAccPreCheck(t)
+	if os.Getenv("DSM_ACC_REGISTRY") != "1" {
+		t.Skip("skipping registry credential test: Container Manager requires real hardware; set DSM_ACC_REGISTRY=1")
+	}
+}
+
 // TestAccPreCheckSystemSettings gates the tests that WRITE the NAS date and
 // time settings. Two reasons to make this opt-in:
 //
