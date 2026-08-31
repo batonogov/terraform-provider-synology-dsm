@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.8.0...v0.8.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **registry_credential:** DSM delete wants the entry name; default trust to false ([#143](https://github.com/batonogov/terraform-provider-synology-dsm/issues/143)) ([ebfad0e](https://github.com/batonogov/terraform-provider-synology-dsm/commit/ebfad0e06e08fd0f661ca6167b40e5d807d207af))
+
 ## [0.8.0](https://github.com/batonogov/terraform-provider-synology-dsm/compare/v0.7.0...v0.8.0) (2026-08-31)
 
 
